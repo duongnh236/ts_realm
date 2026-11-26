@@ -125,3 +125,19 @@ SO_SANH.md                      so sánh TS Manager bản PC với ts_bot
 ```
 
 Chưa chạy thử với server thật. Lần đầu nên chạy từng hoạt động một và xem log.
+
+## Cập nhật app qua GitHub Release
+
+App có nút **⟳** ở thanh trên cùng: đọc release mới nhất của `duongnh236/ts_realm`, nếu tag mới
+hơn phiên bản đang cài thì tải file `.apk` đính kèm và mở trình cài đặt của Android.
+
+Phát hành bản mới (trên máy Mac này, vì APK ký bằng `~/.android/debug.keystore` và build chép
+`train_bot` từ `~/Documents/ts_bot`):
+
+```bash
+scripts/release.sh 1.2.0            # tăng versionName/versionCode + build -> dist/TSRealm-v1.2.0.apk
+```
+
+Rồi tạo release trên GitHub với tag `v1.2.0` và đính kèm file APK đó (hoặc thêm
+`"ghi chú" --publish` để script tự commit, tag, push và tạo release nếu đã cài `gh`).
+Tag phải trùng `versionName` trong `android/version.properties`, nếu không app sẽ báo cập nhật mãi.

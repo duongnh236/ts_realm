@@ -3,6 +3,7 @@ package com.fen.tsrealm;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
@@ -40,6 +41,7 @@ public class MainActivity extends Activity implements AccountPanel.Listener {
     private TextView loading;
     private String current;
     private boolean ready;
+    private Updater updater;
 
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
@@ -52,6 +54,7 @@ public class MainActivity extends Activity implements AccountPanel.Listener {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("main", MODE_PRIVATE);
+        updater = new Updater(this);
         buildShell();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -81,7 +84,7 @@ public class MainActivity extends Activity implements AccountPanel.Listener {
         // thanh tiêu đề cửa sổ: kéo để di chuyển, − thu xuống nền, □ phóng to / thu lại
         LinearLayout titleBar = Ui.row(this);
         titleBar.setBackgroundColor(0xFF0F1115);
-        TextView drag = Ui.text(this, "TS Realm  •  Kéo để di chuyển", 13, Ui.DIM);
+        TextView drag = Ui.text(this, "TS Realm " + Updater.currentVersion(this) + "  •  Kéo để di chuyển", 13, Ui.DIM);
         drag.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), 0, Ui.dp(this, 10));
         drag.setOnTouchListener(new View.OnTouchListener() {
             float x, y;
@@ -105,6 +108,7 @@ public class MainActivity extends Activity implements AccountPanel.Listener {
             }
         });
         titleBar.addView(drag, new LinearLayout.LayoutParams(0, -2, 1f));
+        titleBar.addView(winButton("⟳", v -> updater.check(anyBusy())));   // cập nhật từ GitHub Release
         titleBar.addView(winButton("−", v -> moveTaskToBack(true)));
         titleBar.addView(winButton("□", v -> {
             prefs.edit().putBoolean("win_full", !prefs.getBoolean("win_full", false)).apply();
@@ -146,6 +150,18 @@ public class MainActivity extends Activity implements AccountPanel.Listener {
         content.addView(loading, new FrameLayout.LayoutParams(-1, -1));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
+    }
+
+    private boolean anyBusy() {
+        for (AccountPanel p : panels.values())
+            if ("running".equals(p.state) || "online".equals(p.state) || "logging_in".equals(p.state)) return true;
+        return false;
+    }
+
+    @Override
+    protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        if (i != null && Updater.ACTION_STATUS.equals(i.getAction())) updater.onStatus(i);
     }
 
     private TextView winButton(String label, View.OnClickListener click) {

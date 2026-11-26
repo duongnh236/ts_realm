@@ -21,6 +21,9 @@ tasks.register("syncGameData", Sync) {
     into gameAssets
 }
 
+def appVersion = new Properties()
+file("${rootDir}/version.properties").withInputStream { appVersion.load(it) }
+
 android {
     namespace 'com.fen.tsrealm'
     compileSdk 35
@@ -29,8 +32,10 @@ android {
         applicationId 'com.fen.tsrealm'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        // Số phiên bản đọc từ android/version.properties (scripts/release.sh tăng giúp).
+        // Nút ⟳ Cập nhật trong app so versionName với tag GitHub Release (vd "v1.1.0").
+        versionCode appVersion.getProperty("versionCode").toInteger()
+        versionName appVersion.getProperty("versionName")
         ndk {
             abiFilters 'arm64-v8a', 'x86_64'
         }
