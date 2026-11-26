@@ -1,0 +1,108 @@
+{
+ "title": "40 NPC",
+ "steps": [
+  {
+   "do": "log",
+   "text": "40 NPC: T2/T4/T6, thua thì ở lại sân, hồi ở Hoa Đà rồi đánh tiếp (như APK)"
+  },
+  {
+   "do": "tap_if",
+   "t": [
+    "ui/btn_close_popup"
+   ]
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/btn_hoat_dong",
+   "tap": true,
+   "hint": "không thấy nút HĐ ở màn hình chính"
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/tab_su_kien",
+   "tap": true,
+   "optional": true,
+   "timeout": 3000
+  },
+  {
+   "do": "wait_for",
+   "t": "npc40/item_npc40",
+   "tap": true,
+   "hint": "chưa tới giờ hoặc không thấy mục 40 NPC"
+  },
+  {
+   "do": "wait_for",
+   "t": "npc40/btn_vao_san",
+   "tap": true,
+   "optional": true
+  },
+  {
+   "do": "repeat",
+   "times": 80,
+   "log_round": true,
+   "steps": [
+    {
+     "do": "stop_if_outside",
+     "schedule": "npc40"
+    },
+    {
+     "do": "stop_if",
+     "t": [
+      "npc40/msg_xong",
+      "ui/msg_het_luot"
+     ],
+     "text": "xong 40 NPC hoặc hết lượt"
+    },
+    {
+     "do": "if",
+     "t": "npc40/hp_thap",
+     "then": [
+      {
+       "do": "wait_for",
+       "t": "npc40/npc_hoa_da",
+       "tap": true,
+       "optional": true
+      },
+      {
+       "do": "wait_for",
+       "t": "npc40/btn_hoi_phuc",
+       "tap": true,
+       "optional": true
+      }
+     ]
+    },
+    {
+     "do": "wait_for",
+     "t": [
+      "npc40/btn_khieu_chien",
+      "npc40/npc_tiep_theo"
+     ],
+     "tap": true,
+     "timeout": 90000,
+     "hint": "đứng im quá 90 giây"
+    },
+    {
+     "do": "wait_for",
+     "t": "ui/btn_dialog_ok",
+     "tap": true,
+     "optional": true,
+     "timeout": 3000
+    },
+    {
+     "do": "battle",
+     "profile": "npc40"
+    },
+    {
+     "do": "tap_if",
+     "t": [
+      "battle/btn_close_result"
+     ]
+    },
+    {
+     "do": "sleep",
+     "ms": 1500
+    }
+   ]
+  }
+ ]
+}

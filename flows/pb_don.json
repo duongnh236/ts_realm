@@ -1,0 +1,87 @@
+{
+ "title": "Phó bản đơn",
+ "steps": [
+  {
+   "do": "tap_if",
+   "t": [
+    "ui/btn_close_popup"
+   ]
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/btn_hoat_dong",
+   "tap": true,
+   "hint": "không thấy nút HĐ ở màn hình chính"
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/tab_hang_ngay",
+   "tap": true,
+   "optional": true,
+   "timeout": 3000
+  },
+  {
+   "do": "wait_for",
+   "t": "pb/item_pb_don",
+   "tap": true
+  },
+  {
+   "do": "stop_if",
+   "t": "ui/msg_het_luot",
+   "text": "hết lượt phó bản đơn"
+  },
+  {
+   "do": "wait_for",
+   "t": "pb/btn_vao_pb",
+   "tap": true
+  },
+  {
+   "do": "repeat",
+   "times": 40,
+   "until": "pb/hoan_thanh",
+   "log_round": true,
+   "steps": [
+    {
+     "do": "tap_if",
+     "t": "pb/btn_auto_di"
+    },
+    {
+     "do": "if",
+     "t": "battle/my_turn",
+     "region": [
+      0.55,
+      0.55,
+      1,
+      1
+     ],
+     "then": [
+      {
+       "do": "battle",
+       "profile": "pb"
+      }
+     ]
+    },
+    {
+     "do": "tap_if",
+     "t": [
+      "ui/btn_dialog_next",
+      "ui/btn_dialog_ok",
+      "battle/btn_close_result"
+     ]
+    },
+    {
+     "do": "sleep",
+     "ms": 1500
+    }
+   ]
+  },
+  {
+   "do": "tap_if",
+   "t": "pb/btn_nhan_thuong"
+  },
+  {
+   "do": "tap_if",
+   "t": "pb/btn_roi_pb"
+  }
+ ]
+}

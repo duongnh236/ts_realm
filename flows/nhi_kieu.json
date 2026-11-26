@@ -1,0 +1,186 @@
+{
+ "title": "Nhị Kiều (2k)",
+ "steps": [
+  {
+   "do": "log",
+   "text": "Nhị Kiều: Chủ nhật 08–23h. Tầng 1–10 → Đỉnh Tháp → Đại Kiều → 11–14 → Tế đàn → Bắc Tinh Quân → 15–18 → Chiến trường → Nam Tinh Quân → 19–22 → Địa phủ"
+  },
+  {
+   "do": "tap_if",
+   "t": [
+    "ui/btn_close_popup"
+   ]
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/btn_hoat_dong",
+   "tap": true,
+   "hint": "không thấy nút HĐ ở màn hình chính"
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/tab_su_kien",
+   "tap": true,
+   "optional": true,
+   "timeout": 3000
+  },
+  {
+   "do": "wait_for",
+   "t": "nhikieu/item_nhi_kieu",
+   "tap": true,
+   "hint": "chưa tới giờ hoặc không thấy Nhị Kiều"
+  },
+  {
+   "do": "wait_for",
+   "t": "nhikieu/btn_vao_thap",
+   "tap": true,
+   "optional": true
+  },
+  {
+   "do": "repeat",
+   "times": 120,
+   "log_round": true,
+   "steps": [
+    {
+     "do": "stop_if_outside",
+     "schedule": "nhi_kieu"
+    },
+    {
+     "do": "stop_if",
+     "t": [
+      "nhikieu/msg_hoan_thanh",
+      "ui/msg_het_luot"
+     ],
+     "text": "leo xong tháp hoặc hết lượt"
+    },
+    {
+     "do": "if",
+     "t": "nhikieu/npc_dai_kieu",
+     "then": [
+      {
+       "do": "wait_for",
+       "t": "nhikieu/npc_dai_kieu",
+       "tap": true
+      },
+      {
+       "do": "repeat",
+       "times": 6,
+       "until": "ui/btn_dialog_ok",
+       "steps": [
+        {
+         "do": "tap_if",
+         "t": "ui/btn_dialog_next"
+        }
+       ]
+      },
+      {
+       "do": "tap_if",
+       "t": "ui/btn_dialog_ok"
+      }
+     ]
+    },
+    {
+     "do": "if",
+     "t": "nhikieu/npc_bac_tinh_quan",
+     "then": [
+      {
+       "do": "wait_for",
+       "t": "nhikieu/npc_bac_tinh_quan",
+       "tap": true
+      },
+      {
+       "do": "repeat",
+       "times": 6,
+       "until": "ui/btn_dialog_ok",
+       "steps": [
+        {
+         "do": "tap_if",
+         "t": "ui/btn_dialog_next"
+        }
+       ]
+      },
+      {
+       "do": "tap_if",
+       "t": "ui/btn_dialog_ok"
+      }
+     ]
+    },
+    {
+     "do": "if",
+     "t": "nhikieu/npc_nam_tinh_quan",
+     "then": [
+      {
+       "do": "wait_for",
+       "t": "nhikieu/npc_nam_tinh_quan",
+       "tap": true
+      },
+      {
+       "do": "repeat",
+       "times": 6,
+       "until": "ui/btn_dialog_ok",
+       "steps": [
+        {
+         "do": "tap_if",
+         "t": "ui/btn_dialog_next"
+        }
+       ]
+      },
+      {
+       "do": "tap_if",
+       "t": "ui/btn_dialog_ok"
+      }
+     ]
+    },
+    {
+     "do": "if",
+     "t": [
+      "nhikieu/quai",
+      "nhikieu/boss"
+     ],
+     "then": [
+      {
+       "do": "wait_for",
+       "t": [
+        "nhikieu/boss",
+        "nhikieu/quai"
+       ],
+       "tap": true
+      },
+      {
+       "do": "wait_for",
+       "t": "ui/btn_dialog_ok",
+       "tap": true,
+       "optional": true,
+       "timeout": 3000
+      },
+      {
+       "do": "battle",
+       "profile": "nhi_kieu"
+      },
+      {
+       "do": "tap_if",
+       "t": [
+        "battle/btn_close_result"
+       ]
+      }
+     ],
+     "else": [
+      {
+       "do": "wait_for",
+       "t": [
+        "nhikieu/cua_len_tang"
+       ],
+       "tap": true,
+       "timeout": 20000,
+       "hint": "không thấy quái hay cửa lên tầng"
+      }
+     ]
+    },
+    {
+     "do": "sleep",
+     "ms": 1500
+    }
+   ]
+  }
+ ]
+}

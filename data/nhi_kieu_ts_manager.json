@@ -1,0 +1,306 @@
+{
+ "_nguon": "TS Manager PC v1.0.183 seasonal_event_policy_generated (Nhị Kiều)",
+ "route_len_tang": [
+  {
+   "scene_id": 12922,
+   "door_id": 2,
+   "x": 110,
+   "y": 354,
+   "to_scene": 12923
+  },
+  {
+   "scene_id": 12923,
+   "door_id": 2,
+   "x": 662,
+   "y": 294,
+   "to_scene": 12924
+  },
+  {
+   "scene_id": 12924,
+   "door_id": 2,
+   "x": 792,
+   "y": 196,
+   "to_scene": 12925
+  },
+  {
+   "scene_id": 12925,
+   "door_id": 1,
+   "x": 783,
+   "y": 201,
+   "to_scene": 12926
+  },
+  {
+   "scene_id": 12926,
+   "door_id": 2,
+   "x": 788,
+   "y": 187,
+   "to_scene": 12927
+  },
+  {
+   "scene_id": 12927,
+   "door_id": 1,
+   "x": 790,
+   "y": 188,
+   "to_scene": 12928
+  },
+  {
+   "scene_id": 12928,
+   "door_id": 2,
+   "x": 784,
+   "y": 186,
+   "to_scene": 12929
+  },
+  {
+   "scene_id": 12929,
+   "door_id": 2,
+   "x": 793,
+   "y": 187,
+   "to_scene": 12930
+  },
+  {
+   "scene_id": 12930,
+   "door_id": 3,
+   "x": 789,
+   "y": 189,
+   "to_scene": 12931
+  },
+  {
+   "scene_id": 12931,
+   "door_id": 2,
+   "x": 794,
+   "y": 193,
+   "to_scene": 12932
+  },
+  {
+   "scene_id": 12932,
+   "door_id": 2,
+   "x": 798,
+   "y": 185,
+   "to_scene": 12933
+  },
+  {
+   "scene_id": 12933,
+   "door_id": 2,
+   "x": 790,
+   "y": 188,
+   "to_scene": 12934
+  }
+ ],
+ "cua_an_moi_tang": [
+  {
+   "scene_id": 12922,
+   "door_id": 3,
+   "x": 1102,
+   "y": 469
+  },
+  {
+   "scene_id": 12922,
+   "door_id": 4,
+   "x": 290,
+   "y": 392
+  },
+  {
+   "scene_id": 12923,
+   "door_id": 3,
+   "x": 638,
+   "y": 536
+  },
+  {
+   "scene_id": 12924,
+   "door_id": 3,
+   "x": 561,
+   "y": 1188
+  },
+  {
+   "scene_id": 12924,
+   "door_id": 4,
+   "x": 309,
+   "y": 747
+  },
+  {
+   "scene_id": 12924,
+   "door_id": 5,
+   "x": 609,
+   "y": 306
+  },
+  {
+   "scene_id": 12925,
+   "door_id": 3,
+   "x": 590,
+   "y": 1169
+  },
+  {
+   "scene_id": 12925,
+   "door_id": 4,
+   "x": 270,
+   "y": 747
+  },
+  {
+   "scene_id": 12925,
+   "door_id": 5,
+   "x": 599,
+   "y": 306
+  },
+  {
+   "scene_id": 12926,
+   "door_id": 3,
+   "x": 590,
+   "y": 1169
+  },
+  {
+   "scene_id": 12926,
+   "door_id": 4,
+   "x": 270,
+   "y": 747
+  },
+  {
+   "scene_id": 12926,
+   "door_id": 5,
+   "x": 590,
+   "y": 325
+  },
+  {
+   "scene_id": 12927,
+   "door_id": 3,
+   "x": 590,
+   "y": 1169
+  },
+  {
+   "scene_id": 12927,
+   "door_id": 4,
+   "x": 270,
+   "y": 747
+  },
+  {
+   "scene_id": 12927,
+   "door_id": 5,
+   "x": 609,
+   "y": 306
+  },
+  {
+   "scene_id": 12928,
+   "door_id": 3,
+   "x": 570,
+   "y": 1188
+  },
+  {
+   "scene_id": 12928,
+   "door_id": 4,
+   "x": 270,
+   "y": 747
+  },
+  {
+   "scene_id": 12928,
+   "door_id": 5,
+   "x": 609,
+   "y": 306
+  },
+  {
+   "scene_id": 12929,
+   "door_id": 3,
+   "x": 570,
+   "y": 1188
+  },
+  {
+   "scene_id": 12929,
+   "door_id": 4,
+   "x": 270,
+   "y": 747
+  },
+  {
+   "scene_id": 12929,
+   "door_id": 5,
+   "x": 599,
+   "y": 325
+  },
+  {
+   "scene_id": 12930,
+   "door_id": 4,
+   "x": 561,
+   "y": 1188
+  },
+  {
+   "scene_id": 12930,
+   "door_id": 5,
+   "x": 261,
+   "y": 747
+  },
+  {
+   "scene_id": 12930,
+   "door_id": 6,
+   "x": 590,
+   "y": 325
+  },
+  {
+   "scene_id": 12931,
+   "door_id": 3,
+   "x": 561,
+   "y": 1188
+  },
+  {
+   "scene_id": 12931,
+   "door_id": 4,
+   "x": 261,
+   "y": 747
+  },
+  {
+   "scene_id": 12931,
+   "door_id": 5,
+   "x": 609,
+   "y": 306
+  },
+  {
+   "scene_id": 12932,
+   "door_id": 3,
+   "x": 561,
+   "y": 1188
+  },
+  {
+   "scene_id": 12932,
+   "door_id": 4,
+   "x": 261,
+   "y": 747
+  },
+  {
+   "scene_id": 12932,
+   "door_id": 5,
+   "x": 599,
+   "y": 306
+  },
+  {
+   "scene_id": 12933,
+   "door_id": 3,
+   "x": 561,
+   "y": 1188
+  },
+  {
+   "scene_id": 12933,
+   "door_id": 4,
+   "x": 261,
+   "y": 747
+  },
+  {
+   "scene_id": 12933,
+   "door_id": 5,
+   "x": 599,
+   "y": 306
+  }
+ ],
+ "tang_trong_thap": [
+  12922,
+  12923,
+  12924,
+  12925,
+  12926,
+  12927,
+  12928,
+  12929,
+  12930,
+  12931,
+  12932,
+  12933,
+  12934
+ ],
+ "dinh_thap_scene": 12934,
+ "_ghi_chu": "route_len_tang/cua_an_moi_tang là bảng có tên trường rõ ràng (tin được). Tọa độ cổng vào/thoát/trận đỉnh không ghép chắc được tên nên bỏ."
+}

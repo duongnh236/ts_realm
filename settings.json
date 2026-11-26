@@ -1,0 +1,20 @@
+{
+ "_note": "Đường dẫn tới ts_bot (ts_realm chỉ đọc, không sửa). Mật khẩu để trống thì bot hỏi khi chạy.",
+ "ts_bot_python": "~/Documents/ts_bot/app/src/main/python",
+ "ts_bot_data": "~/Documents/ts_bot/app/src/main/assets/train_bot_data",
+ "runtime_dir": "runtime",
+ "server": "ts_realm",
+ "accounts": {
+  "acc1": {"username": "", "password": "", "label": "acc1"}
+ },
+ "rules": {"cleanse": true, "dispel": true, "dispel_mode": "worthy", "avoid_barrier": true, "boss_style": "auto", "auto_guard_hp": 0.5,
+           "dau_chuyen_first": true, "npc40_ai": "ts_manager", "party_hp_emergency": 0.5, "guard_hp": 0.5, "guard_outnumbered_by": 2},
+ "world_boss": {"use_tickets": true, "damage_goal": 5000000, "ticket_ids": [46629, 46614]},
+ "team_dungeon_level": 50,
+ "max_losses": {"npc40": 3, "nhi_kieu": 3},
+ "windows": {
+  "world_boss": {"start": "10:00", "end": "23:00", "utc_offset": 7},
+  "npc40": {"days": [0, 2, 4], "start": "20:00", "end": "23:00", "utc_offset": 7},
+  "nhi_kieu": {"days": [6], "start": "08:00", "end": "23:00", "utc_offset": 7}
+ }
+}

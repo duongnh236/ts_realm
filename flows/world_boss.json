@@ -1,0 +1,69 @@
+{
+ "title": "Boss Thế Giới",
+ "steps": [
+  {
+   "do": "tap_if",
+   "t": [
+    "ui/btn_close_popup"
+   ]
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/btn_hoat_dong",
+   "tap": true,
+   "hint": "không thấy nút HĐ ở màn hình chính"
+  },
+  {
+   "do": "wait_for",
+   "t": "ui/tab_hang_ngay",
+   "tap": true,
+   "optional": true,
+   "timeout": 3000
+  },
+  {
+   "do": "wait_for",
+   "t": "boss/item_boss_tg",
+   "tap": true,
+   "hint": "không thấy mục Boss Thế Giới"
+  },
+  {
+   "do": "repeat",
+   "times": 5,
+   "log_round": true,
+   "steps": [
+    {
+     "do": "stop_if_outside",
+     "schedule": "world_boss"
+    },
+    {
+     "do": "stop_if",
+     "t": [
+      "boss/msg_het_luot",
+      "boss/msg_ngoai_gio"
+     ],
+     "text": "server báo hết lượt / ngoài giờ"
+    },
+    {
+     "do": "wait_for",
+     "t": "boss/btn_khieu_chien",
+     "tap": true,
+     "timeout": 20000
+    },
+    {
+     "do": "battle",
+     "profile": "world_boss"
+    },
+    {
+     "do": "tap_if",
+     "t": [
+      "battle/btn_close_result"
+     ]
+    },
+    {
+     "do": "sleep",
+     "ms": 2000
+    }
+   ]
+  }
+ ]
+}

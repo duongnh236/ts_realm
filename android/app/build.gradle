@@ -1,0 +1,82 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+// ts_realm dung lai train_bot (dang nhap, giao thuc, cac luong su kien) + du lieu game cua ts_bot.
+// Gradle CHI DOC tu ts_bot va chep vao build/, khong sua file nao ben ts_bot.
+def tsBot = rootProject.file(project.findProperty("tsBotDir") ?: "../../ts_bot")
+def tsRealm = rootProject.file("..")
+def pySrc = layout.buildDirectory.dir("pysrc")
+def gameAssets = layout.buildDirectory.dir("gameassets")
+
+tasks.register("syncPython", Sync) {
+    from("${tsBot}/app/src/main/python") { include "train_bot/**" }
+    from("${tsRealm}") { include "realm/**" }
+    exclude "**/__pycache__/**", "**/*.pyc"
+    into pySrc
+}
+tasks.register("syncGameData", Sync) {
+    from("${tsBot}/app/src/main/assets") { include "train_bot_data/**" }
+    into gameAssets
+}
+
+android {
+    namespace 'com.fen.tsrealm'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.fen.tsrealm'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+    }
+    sourceSets {
+        main {
+            assets.srcDirs += [gameAssets.get().asFile]
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    packaging {
+        jniLibs { useLegacyPackaging true }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.8"          // cung ban Python voi ts_bot
+    }
+    sourceSets {
+        getByName("main") {
+            srcDir(pySrc.get().asFile)
+        }
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs.each { output ->
+            output.outputFileName.set("TSRealm-${variant.buildType}.apk")
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn "syncPython", "syncGameData" }
+tasks.configureEach { t ->
+    if (t.name.startsWith("merge") && (t.name.contains("Python") || t.name.contains("Assets"))) {
+        t.dependsOn "syncPython", "syncGameData"
+    }
+}

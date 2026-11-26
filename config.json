@@ -1,0 +1,173 @@
+{
+ "_note": "Toạ độ là tỉ lệ 0..1 theo màn hình. Đặt skills = id skill nhân vật/tướng đã học (xem skill_ids.md).",
+ "adb_path": "adb",
+ "adb_serial": "emulator-5554",
+ "ref_width": 1280,
+ "threshold": 0.85,
+ "schedules": {
+  "world_boss": {
+   "start": "10:00",
+   "end": "23:00",
+   "utc_offset": 7
+  },
+  "npc40": {
+   "days": [
+    0,
+    2,
+    4
+   ],
+   "start": "12:00",
+   "end": "22:00",
+   "utc_offset": 7
+  },
+  "nhi_kieu": {
+   "days": [
+    6
+   ],
+   "start": "08:00",
+   "end": "23:00",
+   "utc_offset": 7
+  }
+ },
+ "max_losses": {
+  "npc40": 0,
+  "nhi_kieu": 0
+ },
+ "team_dungeon_level": 50,
+ "battle": {
+  "turn": [
+   "battle/my_turn"
+  ],
+  "turn_region": [
+   0.55,
+   0.55,
+   1.0,
+   1.0
+  ],
+  "end": [
+   "battle/win",
+   "battle/lose",
+   "battle/end"
+  ],
+  "skill_button": "battle/btn_skill",
+  "attack_button": "battle/btn_attack",
+  "close_button": "battle/btn_close",
+  "ally_rows": [
+   2,
+   3
+  ],
+  "enemy_rows": [
+   0,
+   1
+  ],
+  "char_row": 3,
+  "ally_slots": {
+   "3,2": [
+    0.78,
+    0.72
+   ],
+   "2,2": [
+    0.7,
+    0.62
+   ],
+   "3,1": [
+    0.86,
+    0.8
+   ],
+   "2,1": [
+    0.78,
+    0.7
+   ],
+   "3,3": [
+    0.7,
+    0.84
+   ],
+   "2,3": [
+    0.62,
+    0.74
+   ]
+  },
+  "enemy_slots": {
+   "0,2": [
+    0.22,
+    0.3
+   ],
+   "1,2": [
+    0.3,
+    0.4
+   ]
+  },
+  "boss_slot": "0,2",
+  "status_box": [
+   0.09,
+   0.12
+  ],
+  "status_threshold": 0.8,
+  "turn_order": [
+   "char",
+   "pet"
+  ],
+  "units": {
+   "char": {
+    "row": 3,
+    "col": 2,
+    "skills": [],
+    "attack": [],
+    "hp_bar": {
+     "region": [
+      0.02,
+      0.02,
+      0.22,
+      0.04
+     ],
+     "bgr": [
+      40,
+      40,
+      220
+     ]
+    }
+   },
+   "pet": {
+    "row": 2,
+    "col": 2,
+    "skills": [],
+    "attack": []
+   }
+  },
+  "skill_cost": {
+   "14022": 10,
+   "20015": 30,
+   "14007": 5,
+   "11015": 20,
+   "14014": 10,
+   "11012": 15,
+   "20019": 30,
+   "11025": 48,
+   "11040": 48,
+   "11031": 60,
+   "20050": 40,
+   "10009": 30,
+   "10014": 30
+  },
+  "auto_guard_hp": 0.45,
+  "max_turns": 80,
+  "turn_delay": 1.5,
+  "unit_delay": 0.6
+ },
+ "battle_profiles": {
+  "world_boss": {
+   "style": "auto"
+  },
+  "nhi_kieu": {
+   "style": "auto",
+   "max_turns": 60
+  },
+  "npc40": {
+   "style": "auto",
+   "max_turns": 60
+  },
+  "pb": {
+   "style": "survive"
+  }
+ }
+}
