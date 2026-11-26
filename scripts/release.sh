@@ -38,7 +38,7 @@ if [ "$PUBLISH" = "--publish" ]; then
     git add -A
     git commit -m "Release v$VER" || true
     git tag "v$VER"
-    git push origin HEAD --tags
+    git push origin HEAD:main && git push origin "v$VER"
     if command -v gh >/dev/null; then
         gh release create "v$VER" "$APK" --title "v$VER" --notes "$NOTES"
         echo "==> Đã tạo release v$VER"
