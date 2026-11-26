@@ -34,11 +34,35 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          "dau_chuyen_first": True,
          "npc40_ai": "ts_manager", "party_hp_emergency": 0.5, "guard_hp": 0.5,
          "guard_outnumbered_by": 2,
-         # Buff khi đánh boss: {"char": {"skill": id, "target": "pet"|"char"}, "pet": {...}}
-         # (app chọn, realm.loadout.apply ghi vào). Rỗng = không buff.
-         "boss_buffs": {}, "buff_min_gap": 3}
+         # Buff theo chế độ: {"boss"|"npc40"|"nhi_kieu": {"char": {"skill": id, "target": "pet"|"char"},
+         # "pet": {...}}} (app chọn, realm.loadout.apply ghi vào). Rỗng = không buff.
+         # "boss_buffs" = tên cũ của mode_buffs["boss"].
+         "mode_buffs": {}, "boss_buffs": {}, "buff_min_gap": 3}
 
-_buff_cast = {}      # (nhãn acc, đơn vị) -> (thế hệ trận, lượt) lần buff gần nhất
+_realm_rules = threading.local()   # .only = True: chỉ đọc luật skill do app chọn
+
+
+def _is_realm_rule(rule):
+    return isinstance(rule, dict) and str(rule.get("tag") or "").startswith("realm_")
+
+
+_buff_cast = {}      # (nhóm, chế độ, hàng, cột, loại buff) -> (thế hệ trận, lượt) lần buff gần nhất
+_SKILL_KIND = {}     # skill buff -> ô trạng thái (kind) server dùng, học từ S:053-001 trong trận
+
+
+def _learn_kinds(status_by_kind):
+    for by_kind in (status_by_kind or {}).values():
+        for kind, sid in (by_kind or {}).items():
+            try:
+                _SKILL_KIND[int(sid)] = kind
+            except (TypeError, ValueError):
+                pass
+
+
+def buff_group(skill):
+    """Loại buff: cùng ô trạng thái (đã thấy trong trận) thì coi là cùng loại, buff sau đè buff trước."""
+    kind = _SKILL_KIND.get(int(skill))
+    return ("k", kind) if kind is not None else ("s", int(skill))
 
 
 def _owner(combat, state, unit, tag):
@@ -99,16 +123,37 @@ def _fight_key(state):
     return int(getattr(tr, "generation", 0) or 0), int(getattr(tr, "turn", 0) or 0)
 
 
-def try_buff(combat, state, unit, skills, stat, options):
-    """Buff dame (hoặc buff người dùng chọn) trong trận boss.
+MODE_NAMES = {"boss": "buff boss", "npc40": "buff 40 NPC", "nhi_kieu": "buff Nhị Kiều"}
 
-    Dùng khi: đang đánh boss, đã học skill, đủ SP, mục tiêu còn sống và CHƯA mang buff đó (đọc từ
+
+def buff_mode(state):
+    """Chế độ đang đánh để chọn bộ buff: 40 NPC / Nhị Kiều (realm_mode) hoặc boss (boss_mode)."""
+    rm = getattr(state, "realm_mode", None)
+    if rm in ("npc40", "nhi_kieu"):
+        return rm
+    if getattr(state, "boss_mode", False):
+        return "boss"
+    return None
+
+
+def _buff_cfg(mode, key):
+    mb = (RULES.get("mode_buffs") or {}).get(mode)
+    if mb is None and mode == "boss":
+        mb = RULES.get("boss_buffs")
+    return (mb or {}).get(key)
+
+
+def try_buff(combat, state, unit, skills, stat, options):
+    """Buff dame (hoặc buff người dùng chọn) trong trận boss / 40 NPC / Nhị Kiều.
+
+    Dùng khi: đang ở chế độ có cấu hình buff, đã học skill, đủ SP, mục tiêu còn sống và CHƯA mang buff đó (đọc từ
     danh sách trạng thái S:053-001 / ``status_by_kind``). Server không báo trạng thái thì vẫn không
     buff lại trước ``buff_min_gap`` lượt kể từ lần buff trước trong cùng trận."""
-    if not getattr(state, "boss_mode", False) or _dead(stat):
+    mode = buff_mode(state)
+    if mode is None or _dead(stat):
         return None
     key = "char" if unit == combat.config.UNIT_CHAR else "pet"
-    cfg = (RULES.get("boss_buffs") or {}).get(key)
+    cfg = _buff_cfg(mode, key)
     if not cfg:
         return None
     try:
@@ -122,16 +167,24 @@ def try_buff(combat, state, unit, skills, stat, options):
     tgt = getattr(state, "pet", None) if row == 2 else getattr(state, "char", None)
     if tgt is not None and getattr(tgt, "hp_max", 0) > 0 and getattr(tgt, "hp", 1) <= 0:
         return None
-    on = (getattr(state, "status_by_kind", None) or {}).get((row, col)) or {}
-    if skill in set(on.values()):
+    sbk = getattr(state, "status_by_kind", None) or {}
+    _learn_kinds(sbk)
+    on = sbk.get((row, col)) or {}
+    grp = buff_group(skill)
+    # Mục tiêu đang mang đúng buff này, hoặc buff cùng loại (cùng ô trạng thái server) -> không buff trùng
+    if skill in set(on.values()) or (grp[0] == "k" and grp[1] in on):
         return None
     gen, turn = _fight_key(state)
-    last = _buff_cast.get((state.label, key))
-    gap = int(RULES.get("buff_min_gap", 3) or 0)
-    if last is not None and last[0] == gen and 0 <= turn - last[1] < gap:
-        return None
-    _buff_cast[(state.label, key)] = (gen, turn)
-    log.info("[%s] buff boss: %s dùng %s lên %s", state.label, "nhân vật" if key == "char" else "pet",
+    # Ghi theo MỤC TIÊU + loại buff (không theo người buff): nhân vật vừa buff pet thì pet không buff
+    # trùng lên chính nó cùng lượt / trong ``buff_min_gap`` lượt, kể cả khi server chưa báo trạng thái.
+    ck = (_group(state), mode, row, col, grp)
+    gap = max(1, int(RULES.get("buff_min_gap", 3) or 0))
+    with _lock:
+        last = _buff_cast.get(ck)
+        if last is not None and last[0] == gen and 0 <= turn - last[1] < gap:
+            return None
+        _buff_cast[ck] = (gen, turn)
+    log.info("[%s] %s: %s dùng %s lên %s", state.label, MODE_NAMES[mode], "nhân vật" if key == "char" else "pet",
              ((getattr(combat.config, "SKILL_INFO", {}) or {}).get(skill) or {}).get("name", skill),
              "nhân vật" if row != 2 else "pet")
     return combat.Decision(unit, state.my_atype, col, skill, b=row)
@@ -237,7 +290,7 @@ def _guard_first(state, stat):
 
 def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min):
     """Đẩu Chuyển trên địch (ưu tiên nhất, theo yêu cầu) -> thứ tự của TS Manager: hồi sinh -> hồi máu party khi nguy -> giải khống chế đồng đội ->
-    (khiên trước nếu đang yếu / bị áp đảo) -> khống chế địch -> giải buff địch -> khiên ->
+    (khiên trước nếu đang yếu / bị áp đảo) -> khống chế địch -> giải buff địch -> phá khiên -> buff người dùng chọn -> khiên ->
     hồi SP party -> đánh (tránh con có Kết Giới, ưu tiên con ít máu)."""
     if getattr(stat, "hp_max", 0) > 0 and getattr(stat, "hp", 0) <= 0:
         return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
@@ -251,6 +304,7 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min):
         lambda: combat._try_cc(state, unit, skills, stat, options, "low"),
         lambda: try_dispel(combat, state, unit, skills, stat, options),
         lambda: combat._try_break_enemy_protect(state, unit, skills, stat, options),
+        lambda: try_buff(combat, state, unit, skills, stat, options),
         lambda: combat._try_protect(state, unit, skills, stat),
         lambda: combat._try_sp_restore(state, unit, skills, stat),
     )
@@ -276,6 +330,26 @@ def install(combat, rules: dict = None):
     _installed = True
     orig_char, orig_pet, orig_protect = combat.decide_char, combat.decide_pet, combat._try_protect
     orig_low, orig_pos = combat._lowest_hp_enemy, combat._enemy_target_pos
+    orig_rules, orig_attack = getattr(combat, "_battle_rules", None), getattr(combat, "_combat_attack", None)
+
+    # Luật skill đánh do app chọn (tag "realm_...") KHÔNG được chen trước hồi sinh / giải / hồi máu /
+    # khiên: lúc ts_bot đọc luật thì ẩn chúng đi, tới bước TẤN CÔNG mới dùng (thay cho đánh tự động).
+    def _battle_rules(state, unit_key):
+        rules = orig_rules(state, unit_key) or []
+        only = getattr(_realm_rules, "only", False)
+        return [r for r in rules if _is_realm_rule(r) == only]
+
+    def _combat_attack(state, unit, skills, stat, options, spam_attr, fire_min):
+        if not _dead(stat):
+            key = "char" if unit == combat.config.UNIT_CHAR else "pet"
+            _realm_rules.only = True
+            try:
+                d = combat._custom_decision(state, unit, key, skills, stat, options)
+            finally:
+                _realm_rules.only = False
+            if d is not None and d is not getattr(combat, "_CUSTOM_AUTO", object()):
+                return d
+        return orig_attack(state, unit, skills, stat, options, spam_attr, fire_min)
 
     def _support(state, unit, skills, stat, options):
         if not getattr(state, "support_combat", False):
@@ -329,3 +403,5 @@ def install(combat, rules: dict = None):
 
     combat.decide_char, combat.decide_pet, combat._try_protect = decide_char, decide_pet, _try_protect
     combat._lowest_hp_enemy, combat._enemy_target_pos = _lowest_hp_enemy, _enemy_target_pos
+    if orig_rules is not None and orig_attack is not None:
+        combat._battle_rules, combat._combat_attack = _battle_rules, _combat_attack

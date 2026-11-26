@@ -70,6 +70,37 @@ class Runner:
             self.c.auto_combat = self._auto_combat_before
             del self._auto_combat_before
 
+    def _loadout_on(self, mode):
+        """Áp pet / skill đánh / buff người dùng chọn cho ``mode`` (npc40 / nhi_kieu).
+        Trả True nếu đã đổi pet (để lúc xong đổi lại)."""
+        opts = dict((self.s.get("loadouts") or {}).get(mode) or {})
+        from . import combat_rules, loadout
+        try:
+            loadout.apply(self.c, opts, rules_mod=combat_rules, mode=mode)
+        except Exception as exc:
+            log.warning("%s: không áp được đội hình (%s) -> đánh tự động", mode, exc)
+            return False
+        if not int(opts.get("pet_id") or 0) or not hasattr(self.c, "ensure_pet_role"):
+            return False
+        try:
+            self.c.ensure_pet_role(mode)
+            return True
+        except Exception as exc:
+            log.warning("%s: đổi pet lỗi (%s)", mode, exc)
+            return False
+
+    def _loadout_off(self, mode, pet_switched):
+        from . import combat_rules, loadout
+        try:
+            loadout.clear(self.c, mode, rules_mod=combat_rules)
+        except Exception as exc:
+            log.warning("%s: gỡ đội hình lỗi (%s)", mode, exc)
+        if pet_switched:
+            try:
+                self.c.ensure_pet_role(getattr(self.c, "default_pet_role", "train"))
+            except Exception as exc:
+                log.warning("%s: trả pet lỗi (%s)", mode, exc)
+
     def _wait_thread(self, thread, win_name=None, done: threading.Event = None):
         while thread is not None and thread.is_alive():
             if self.stop.is_set() or not self.c.running:
@@ -145,6 +176,7 @@ class Runner:
         self._support(True)
         self.c.state.quest_mode = True
         self.c.state.realm_mode = "npc40"     # bật AI đánh theo TS Manager (combat_rules)
+        pet_switched = self._loadout_on("npc40")
         try:
             t, res = npc40_loop.start(self.c, point, on_loss=lambda: None,
                                       before_repeat=self.c.heal_npc40_between_battles,
@@ -156,6 +188,7 @@ class Runner:
             self.c.stop_npc40_loop()
             self.c.state.quest_mode = False
             self.c.state.realm_mode = None
+            self._loadout_off("npc40", pet_switched)
             self._support(False)
         return True
 
@@ -179,6 +212,8 @@ class Runner:
             done.set()
 
         self._support(True)
+        self.c.state.realm_mode = "nhi_kieu"  # chọn bộ buff / skill Nhị Kiều (combat_rules)
+        pet_switched = self._loadout_on("nhi_kieu")
         try:
             while not self.stop.is_set():
                 done.clear()
@@ -199,6 +234,8 @@ class Runner:
                 time.sleep(3)
         finally:
             self.c.stop_floor_crawl()
+            self.c.state.realm_mode = None
+            self._loadout_off("nhi_kieu", pet_switched)
             self._support(False)
         return True
 

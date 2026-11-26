@@ -195,6 +195,8 @@ class Session:
         for k in ("world_boss", "max_losses"):
             if isinstance(opts.get(k), dict):
                 settings.setdefault(k, {}).update(opts[k])
+        if isinstance(opts.get("loadouts"), dict):   # đội hình 40 NPC / Nhị Kiều chọn trong app
+            settings["loadouts"] = dict(opts["loadouts"])
         if "team_dungeon_level" in opts:
             settings["team_dungeon_level"] = int(opts["team_dungeon_level"])
         self.wb_settings = dict(settings.get("world_boss") or {})

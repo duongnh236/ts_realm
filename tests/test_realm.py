@@ -1069,3 +1069,186 @@ class BuffRuleTest(unittest.TestCase):
             self.assertIsNone(cr_mod.try_buff(comb, st, 2, [12045], stat, []))      # ngoài boss
         finally:
             cr_mod.RULES.clear(); cr_mod.RULES.update(old)
+
+
+class ModeLoadoutTest(unittest.TestCase):
+    """Đội hình riêng cho 40 NPC / Nhị Kiều: pet, skill đánh, buff."""
+
+    def setUp(self):
+        self.old = json_copy(cr.RULES)
+        cr.RULES["mode_buffs"], cr.RULES["boss_buffs"] = {}, {}
+        cr._buff_cast.clear()
+
+    def tearDown(self):
+        cr.RULES.clear()
+        cr.RULES.update(self.old)
+
+    def test_apply_per_mode_and_clear(self):
+        from realm import loadout
+        c = NS(state=NS(battle_config={"char": [{"skill": 1, "condition": "always"}]}, active_pet_id=0xb166))
+        loadout.apply(c, {"pet_id": 0x2ee2, "char_skill": 13013, "pet_buff": 12045}, rules_mod=cr)
+        loadout.apply(c, {"pet_id": 0x1111, "char_skill": 14001, "pet_skill": 14002,
+                          "char_buff": 12050, "char_buff_target": "char"}, rules_mod=cr, mode="npc40")
+        cfg = c.state.battle_config
+        self.assertEqual(cfg["pet_roles"], {"boss": 0x2ee2, "npc40": 0x1111})
+        self.assertEqual([(r["skill"], r["condition"]) for r in cfg["char"]],
+                         [(14001, "quest"), (13013, "boss"), (1, "always")])
+        self.assertEqual(cfg["pets"][str(0x1111)][0]["tag"], "realm_npc40")
+        self.assertEqual(cr.RULES["mode_buffs"]["npc40"], {"char": {"skill": 12050, "target": "char"}})
+        self.assertEqual(cr.RULES["mode_buffs"]["boss"], {"pet": {"skill": 12045, "target": "pet"}})
+        loadout.clear(c, "npc40", rules_mod=cr)
+        cfg = c.state.battle_config
+        self.assertEqual(cfg["pet_roles"], {"boss": 0x2ee2})             # Boss TG giữ nguyên
+        self.assertEqual([r["skill"] for r in cfg["char"]], [13013, 1])
+        self.assertNotIn("pets", cfg)
+        self.assertEqual(cr.RULES["mode_buffs"]["npc40"], {})
+        with self.assertRaises(ValueError):
+            loadout.apply(c, {}, mode="pb_don")
+
+    def test_buff_uses_mode_config(self):
+        cfg = NS(UNIT_CHAR=3, UNIT_PET=2, SKILL_INFO={})
+        comb = NS(config=cfg, _skill_cost=lambda s: 60, Decision=lambda u, a, c, s, b=0: (u, s, b, c))
+        tr = NS(generation=1, turn=1)
+        st = NS(label="m", boss_mode=False, realm_mode="npc40", my_atype=2, char_row=3, tracker=tr,
+                status_by_kind={}, pet=NS(hp=100, hp_max=100), char=NS(hp=100, hp_max=100))
+        stat = NS(sp=500, hp=100, hp_max=100)
+        cr.RULES["mode_buffs"] = {"boss": {"pet": {"skill": 111, "target": "pet"}},
+                                  "npc40": {"pet": {"skill": 222, "target": "pet"}},
+                                  "nhi_kieu": {"char": {"skill": 333, "target": "char"}}}
+        self.assertEqual(cr.try_buff(comb, st, 2, [111, 222], stat, []), (2, 222, 2, 2))
+        st.realm_mode = "nhi_kieu"
+        self.assertIsNone(cr.try_buff(comb, st, 2, [111, 222], stat, []))    # pet Nhị Kiều không chọn buff
+        self.assertEqual(cr.try_buff(comb, st, 3, [333], stat, []), (3, 333, 3, 2))
+        st.realm_mode, st.boss_mode = None, True
+        self.assertEqual(cr.try_buff(comb, st, 2, [111], stat, [])[1], 111)
+        st.boss_mode = False
+        self.assertIsNone(cr.try_buff(comb, st, 2, [111], stat, []))         # train: không buff
+
+    def test_runner_applies_and_restores(self):
+        seen = {}
+
+        class Cli(FakeClient):
+            def ensure_pet_role(self, role):
+                self.log.append(("pet", role, (self.state.battle_config.get("pet_roles") or {}).get(role)))
+                return True
+
+        from realm import npc40_loop
+
+        def fake_loop(client, point, stop, on_loss, before_repeat, window_open, max_consec):
+            seen["npc40"] = (dict(cr.RULES["mode_buffs"].get("npc40") or {}),
+                             [r["skill"] for r in client.state.battle_config["char"]])
+            return "xong"
+        orig = npc40_loop.run_loop
+        npc40_loop.run_loop = fake_loop
+        try:
+            c = Cli()
+            c.state.battle_config = {}
+            c.default_pet_role = "train"
+            lo = {"npc40": {"pet_id": 7, "char_skill": 14001, "pet_buff": 12045},
+                  "nhi_kieu": {"char_buff": 12050, "char_buff_target": "char"}}
+            r = features.Runner(c, CONFIG, {"windows": ALWAYS, "loadouts": lo}, threading.Event())
+            self.assertTrue(r.npc40())
+            self.assertEqual(seen["npc40"], ({"pet": {"skill": 12045, "target": "pet"}}, [14001]))
+            self.assertIn(("pet", "npc40", 7), c.log)
+            self.assertEqual(c.log[-1], ("pet", "train", None))                 # trả pet
+            self.assertEqual(c.state.battle_config["char"], [])                # gỡ luật 40 NPC
+            self.assertEqual(cr.RULES["mode_buffs"]["npc40"], {})
+            c.log.clear()
+            orig_crawl = c.start_floor_crawl
+
+            def crawl(ev, **kw):
+                seen["nk"] = (c.state.realm_mode, dict(cr.RULES["mode_buffs"].get("nhi_kieu") or {}))
+                return orig_crawl(ev, **kw)
+            c.start_floor_crawl = crawl
+            self.assertTrue(r.nhi_kieu())
+            self.assertEqual(seen["nk"], ("nhi_kieu", {"char": {"skill": 12050, "target": "char"}}))
+            self.assertNotIn("pet", [x[0] for x in c.log])                     # không chọn pet -> không đổi
+            self.assertIsNone(c.state.realm_mode)
+            self.assertEqual(cr.RULES["mode_buffs"]["nhi_kieu"], {})
+        finally:
+            npc40_loop.run_loop = orig
+
+
+class BuffDedupTest(unittest.TestCase):
+    """Không buff trùng: nhân vật + pet cùng buff một mục tiêu, hoặc mục tiêu đang có buff cùng loại."""
+
+    def setUp(self):
+        self.old = json_copy(cr.RULES)
+        cr._buff_cast.clear()
+        cr._SKILL_KIND.clear()
+        cfg = NS(UNIT_CHAR=3, UNIT_PET=2, SKILL_INFO={})
+        self.comb = NS(config=cfg, _skill_cost=lambda s: 60, Decision=lambda u, a, c, s, b=0: (u, s, b, c))
+        self.tr = NS(generation=1, turn=1)
+        self.st = NS(label="d", party_idx=None, boss_mode=True, realm_mode=None, my_atype=2, char_row=3,
+                     tracker=self.tr, status_by_kind={}, pet=NS(hp=100, hp_max=100), char=NS(hp=100, hp_max=100))
+        self.stat = NS(sp=500, hp=100, hp_max=100)
+
+    def tearDown(self):
+        cr.RULES.clear()
+        cr.RULES.update(self.old)
+        cr._SKILL_KIND.clear()
+
+    def test_char_and_pet_same_buff_same_target(self):
+        cr.RULES["mode_buffs"] = {"boss": {"char": {"skill": 12045, "target": "pet"},
+                                           "pet": {"skill": 12045, "target": "pet"}}}
+        self.assertEqual(cr.try_buff(self.comb, self.st, 3, [12045], self.stat, [])[1], 12045)
+        self.assertIsNone(cr.try_buff(self.comb, self.st, 2, [12045], self.stat, []))   # pet không buff lại
+        self.tr.turn = 2
+        self.assertIsNone(cr.try_buff(self.comb, self.st, 2, [12045], self.stat, []))   # vẫn trong gap
+
+    def test_same_kind_already_on_target(self):
+        cr.RULES["mode_buffs"] = {"boss": {"pet": {"skill": 12046, "target": "pet"}}}
+        self.st.status_by_kind = {(3, 1): {7: 12045}}            # đã thấy 12045 chiếm ô trạng thái 7
+        self.assertEqual(cr.try_buff(self.comb, self.st, 2, [12046], self.stat, [])[1], 12046)
+        self.tr.generation = 2
+        self.st.status_by_kind = {(3, 1): {7: 12045}, (2, 2): {7: 12046}}
+        cr.RULES["mode_buffs"] = {"boss": {"char": {"skill": 12045, "target": "pet"}}}
+        self.assertIsNone(cr.try_buff(self.comb, self.st, 3, [12045], self.stat, []))   # cùng loại đang có
+
+
+class RealmRuleOrderTest(unittest.TestCase):
+    """Skill đánh do app chọn không chen trước hồi sinh / giải; tới bước đánh mới dùng."""
+
+    def setUp(self):
+        fresh_rules()
+        cb = self.cb = fake_combat()
+        cb.config.SKILL_HEAL_ALL, cb.config.HEAL_SP_COST = 11010, 42
+        cb.config.CHAR_FIRE_MIN_SP = cb.config.PET_FIRE_MIN_SP = 65
+        cb._CUSTOM_AUTO = object()
+        cb._battle_rules = lambda st, key: list((st.battle_config or {}).get(key) or [])
+
+        def custom(st, unit, key, skills, stat, options):
+            rules = cb._battle_rules(st, key)
+            return ("RULE", rules[0]["skill"]) if rules else None
+        cb._custom_decision = custom
+        cb._hang_char_ta = lambda st: 3
+        cb._heal_decide = None
+        cb._claim_support_action = lambda *a: True
+        cb._try_cc = lambda *a: None
+        cb._try_break_enemy_protect = lambda *a: None
+        cb._try_sp_restore = lambda *a: None
+        cb._try_protect = lambda *a: None
+        cb._combat_attack = lambda *a: "ATTACK"
+        cr.install(cb)
+
+    def st(self, rules, **kw):
+        st = fake_state(realm_mode="npc40", quest_mode=True, battle_config={"char": rules},
+                        allies={(3, 2): NS(hp=900, hp_max=1000)}, char=NS(sp=200, hp=900, hp_max=1000),
+                        enemy_hp={0: 10}, **kw)
+        st.lowest_hp_ally = lambda: None
+        return st
+
+    def test_realm_rule_after_support(self):
+        realm_rule = {"skill": 14001, "condition": "quest", "tag": "realm_npc40"}
+        self.cb._try_revive = lambda *a: "REVIVE"
+        self.assertEqual(self.cb.decide_char(self.st([realm_rule]), []), "REVIVE")
+        self.cb._try_revive = lambda *a: None
+        self.assertEqual(self.cb.decide_char(self.st([realm_rule]), []), ("RULE", 14001))
+        self.assertEqual(self.cb.decide_char(self.st([]), []), "ATTACK")
+        user_rule = {"skill": 999, "condition": "always"}                       # luật riêng của người dùng
+        self.assertEqual(self.cb.decide_char(self.st([user_rule, realm_rule]), []), ("RULE", 999))
+
+
+def json_copy(d):
+    import json
+    return json.loads(json.dumps(d))

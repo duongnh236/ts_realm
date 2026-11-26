@@ -43,10 +43,7 @@ class AccountPanel extends ScrollView {
 
     private EditText user, pass, wbGoal, npcLosses, pbLevel;
     private Spinner server;
-    private Spinner spPet, spCharSkill, spPetSkill, spCharBuff, spCharBuffTgt, spPetBuff, spPetBuffTgt;
-    private TextView loadoutHint;
-    private String loadoutSig = "";
-    private JSONObject loadoutData;
+    private LoadoutBox loWb, loNpc, loNk;
     private CheckBox remember, rememberPw, cWb, cWbTickets, cWbBuy, cNpc, cNk, cPbDon, cPbDoi;
     private Button btnLogin, btnRun, btnStop;
     private TextView stateLine, charLine;
@@ -133,13 +130,16 @@ class AccountPanel extends ScrollView {
         wbOpts.addView(cWbBuy);
         wbOpts.addView(label(c, "Dừng khi dame hôm nay ≥"));
         wbOpts.addView(wbGoal);
-        buildLoadout(c, wbOpts);
+        loWb = new LoadoutBox(c, wbOpts, "Đội hình đánh boss", "lo_");
         cNk = Ui.check(c, "Nhị Kiều (2k)  (Chủ nhật 08:00–23:00)", false);
+        LinearLayout nkOpts = indent(c);
+        loNk = new LoadoutBox(c, nkOpts, "Đội hình Nhị Kiều", "lo_nk_");
         cNpc = Ui.check(c, "40 NPC  (T2/T4/T6 20:00–23:00)", false);
         LinearLayout npcOpts = indent(c);
         npcLosses = Ui.number(c, "Thua liên tiếp bao nhiêu trận thì dừng", "3");
         npcOpts.addView(label(c, "Thua liên tiếp mấy trận thì dừng"));
         npcOpts.addView(npcLosses);
+        loNpc = new LoadoutBox(c, npcOpts, "Đội hình 40 NPC", "lo_npc40_");
         cPbDon = Ui.check(c, "Phó bản đơn", false);
         cPbDoi = Ui.check(c, "Phó bản đội", false);
         LinearLayout pbOpts = indent(c);
@@ -150,12 +150,14 @@ class AccountPanel extends ScrollView {
         actCard.addView(cWb);
         actCard.addView(wbOpts);
         actCard.addView(cNk);
+        actCard.addView(nkOpts);
         actCard.addView(cNpc);
         actCard.addView(npcOpts);
         actCard.addView(cPbDon);
         actCard.addView(cPbDoi);
         actCard.addView(pbOpts);
         bindToggle(cWb, wbOpts);
+        bindToggle(cNk, nkOpts);
         bindToggle(cNpc, npcOpts);
         bindToggle(cPbDoi, pbOpts);
         actCard.addView(Ui.text(c, "Chạy lần lượt theo thứ tự trên; cái nào ngoài giờ thì bỏ qua.", 12, Ui.DIM));
@@ -205,40 +207,134 @@ class AccountPanel extends ScrollView {
         root.addView(fight);
     }
 
-    // ---------- đội hình đánh boss ----------
-    private void buildLoadout(Context c, LinearLayout box) {
-        TextView h = Ui.text(c, "Đội hình đánh boss", 14, Ui.TEXT);
-        h.setTypeface(Typeface.DEFAULT_BOLD);
-        h.setPadding(0, Ui.dp(c, 10), 0, Ui.dp(c, 2));
-        box.addView(h);
-        loadoutHint = Ui.text(c, "Đăng nhập để chọn pet và skill", 12, Ui.DIM);
-        box.addView(loadoutHint);
-        spPet = spinner(c);
-        spCharSkill = spinner(c);
-        spPetSkill = spinner(c);
-        spCharBuff = spinner(c);
-        spCharBuffTgt = spinner(c);
-        spPetBuff = spinner(c);
-        spPetBuffTgt = spinner(c);
-        box.addView(label(c, "Pet ra trận"));
-        box.addView(spPet, spLp(c));
-        box.addView(label(c, "Skill đánh của nhân vật"));
-        box.addView(spCharSkill, spLp(c));
-        box.addView(label(c, "Skill đánh của pet"));
-        box.addView(spPetSkill, spLp(c));
-        box.addView(label(c, "Buff của nhân vật"));
-        box.addView(pair(c, spCharBuff, spCharBuffTgt));
-        box.addView(label(c, "Buff của pet"));
-        box.addView(pair(c, spPetBuff, spPetBuffTgt));
-        box.addView(Ui.text(c, "Skill chưa học / thiếu SP thì bot tự đánh như cũ. Giải khống chế và giải buff boss vẫn được ưu tiên trước.", 12, Ui.DIM));
-        String[] tg = {"lên Pet", "lên Nhân vật"};
-        setItems(spCharBuffTgt, new long[]{1, 2}, tg, prefs.getLong("lo_char_buff_tgt", 1));
-        setItems(spPetBuffTgt, new long[]{1, 2}, tg, prefs.getLong("lo_pet_buff_tgt", 1));
-        spPet.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) { fillPetSkills(); }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
-        });
-        enableLoadout(false);
+    // ---------- đội hình theo chế độ (Boss TG / 40 NPC / Nhị Kiều) ----------
+    /** Một khung chọn pet ra trận, skill đánh, skill buff. Mỗi chế độ một khung, lưu riêng theo ``prefix``. */
+    private class LoadoutBox {
+        final String prefix;
+        final Spinner pet, charSkill, petSkill, charBuff, charBuffTgt, petBuff, petBuffTgt;
+        final TextView hint;
+        String sig = "";
+        JSONObject data;
+
+        LoadoutBox(Context c, LinearLayout box, String title, String prefix) {
+            this.prefix = prefix;
+            TextView h = Ui.text(c, title, 14, Ui.TEXT);
+            h.setTypeface(Typeface.DEFAULT_BOLD);
+            h.setPadding(0, Ui.dp(c, 10), 0, Ui.dp(c, 2));
+            box.addView(h);
+            hint = Ui.text(c, "Đăng nhập để chọn pet và skill", 12, Ui.DIM);
+            box.addView(hint);
+            pet = spinner(c);
+            charSkill = spinner(c);
+            petSkill = spinner(c);
+            charBuff = spinner(c);
+            charBuffTgt = spinner(c);
+            petBuff = spinner(c);
+            petBuffTgt = spinner(c);
+            box.addView(label(c, "Pet ra trận"));
+            box.addView(pet, spLp(c));
+            box.addView(label(c, "Skill đánh của nhân vật"));
+            box.addView(charSkill, spLp(c));
+            box.addView(label(c, "Skill đánh của pet"));
+            box.addView(petSkill, spLp(c));
+            box.addView(label(c, "Buff của nhân vật"));
+            box.addView(pair(c, charBuff, charBuffTgt));
+            box.addView(label(c, "Buff của pet"));
+            box.addView(pair(c, petBuff, petBuffTgt));
+            box.addView(Ui.text(c, "Skill chưa học / thiếu SP thì bot tự đánh như cũ. Hồi sinh, giải khống chế, giải buff địch vẫn được ưu tiên trước; hết buff thì buff lại.", 12, Ui.DIM));
+            String[] tg = {"lên Pet", "lên Nhân vật"};
+            setItems(charBuffTgt, new long[]{1, 2}, tg, prefs.getLong(prefix + "char_buff_tgt", 1));
+            setItems(petBuffTgt, new long[]{1, 2}, tg, prefs.getLong(prefix + "pet_buff_tgt", 1));
+            pet.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) { fillPetSkills(); }
+                @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
+            });
+            enable(false);
+        }
+
+        void enable(boolean on) {
+            for (Spinner sp : new Spinner[]{pet, charSkill, petSkill, charBuff, charBuffTgt, petBuff, petBuffTgt}) {
+                sp.setEnabled(on);
+                sp.setAlpha(on ? 1f : 0.5f);
+            }
+            hint.setVisibility(on ? GONE : VISIBLE);
+        }
+
+        private long keep(Spinner sp, String key) {
+            return sp.getTag() == null ? prefs.getLong(prefix + key, 0) : selectedId(sp);
+        }
+
+        private JSONArray petSkills(long pid) {
+            if (data == null) return null;
+            if (pid == 0) pid = data.optLong("active_pet", 0);
+            JSONArray pets = data.optJSONArray("pets");
+            if (pets != null) for (int i = 0; i < pets.length(); i++) {
+                JSONObject p = pets.optJSONObject(i);
+                if (p != null && p.optLong("id") == pid) return p.optJSONArray("skills");
+            }
+            return null;
+        }
+
+        void fillPetSkills() {
+            if (data == null) return;
+            long keepSkill = keep(petSkill, "pet_skill");
+            long keepBuff = keep(petBuff, "pet_buff");
+            JSONArray sk = petSkills(selectedId(pet));
+            fillSkills(petSkill, sk, true, "Tự động", keepSkill);
+            fillSkills(petBuff, sk, false, "Không buff", keepBuff);
+        }
+
+        void apply(JSONObject lo) {
+            if (lo == null) return;
+            String s = lo.toString();
+            if (s.equals(sig)) return;
+            sig = s;
+            data = lo;
+            JSONArray pets = lo.optJSONArray("pets");
+            List<Long> ids = new ArrayList<>();
+            List<String> labels = new ArrayList<>();
+            ids.add(0L);
+            labels.add("Giữ pet đang dùng");
+            if (pets != null) for (int i = 0; i < pets.length(); i++) {
+                JSONObject p = pets.optJSONObject(i);
+                if (p == null) continue;
+                ids.add(p.optLong("id"));
+                String nm = p.optString("name");
+                if (p.optLong("id") == lo.optLong("active_pet", -1)) nm += "  (đang dùng)";
+                labels.add(nm);
+            }
+            long[] a = new long[ids.size()];
+            for (int i = 0; i < a.length; i++) a[i] = ids.get(i);
+            long keepPet = keep(pet, "pet");
+            setItems(pet, a, labels.toArray(new String[0]), keepPet);
+            JSONArray cs = lo.optJSONArray("char_skills");
+            long keepCS = keep(charSkill, "char_skill");
+            long keepCB = keep(charBuff, "char_buff");
+            fillSkills(charSkill, cs, true, "Tự động", keepCS);
+            fillSkills(charBuff, cs, false, "Không buff", keepCB);
+            fillPetSkills();
+            enable(cs != null && cs.length() > 0);
+        }
+
+        void save(SharedPreferences.Editor e) {
+            if (pet.getTag() != null) {
+                e.putLong(prefix + "pet", selectedId(pet)).putLong(prefix + "char_skill", selectedId(charSkill))
+                        .putLong(prefix + "pet_skill", selectedId(petSkill)).putLong(prefix + "char_buff", selectedId(charBuff))
+                        .putLong(prefix + "pet_buff", selectedId(petBuff));
+            }
+            e.putLong(prefix + "char_buff_tgt", selectedId(charBuffTgt)).putLong(prefix + "pet_buff_tgt", selectedId(petBuffTgt));
+        }
+
+        /** Ghi lựa chọn vào ``o`` (chưa đăng nhập thì lấy lựa chọn đã lưu lần trước). */
+        JSONObject put(JSONObject o) throws org.json.JSONException {
+            return o.put("pet_id", keep(pet, "pet"))
+                    .put("char_skill", keep(charSkill, "char_skill"))
+                    .put("pet_skill", keep(petSkill, "pet_skill"))
+                    .put("char_buff", keep(charBuff, "char_buff"))
+                    .put("char_buff_target", selectedId(charBuffTgt) == 2 ? "char" : "pet")
+                    .put("pet_buff", keep(petBuff, "pet_buff"))
+                    .put("pet_buff_target", selectedId(petBuffTgt) == 2 ? "char" : "pet");
+        }
     }
 
     private LinearLayout pair(Context c, Spinner a, Spinner b) {
@@ -295,14 +391,6 @@ class AccountPanel extends ScrollView {
         return i >= 0 && i < ids.length ? ids[i] : 0;
     }
 
-    private void enableLoadout(boolean on) {
-        for (Spinner sp : new Spinner[]{spPet, spCharSkill, spPetSkill, spCharBuff, spCharBuffTgt, spPetBuff, spPetBuffTgt}) {
-            sp.setEnabled(on);
-            sp.setAlpha(on ? 1f : 0.5f);
-        }
-        loadoutHint.setVisibility(on ? GONE : VISIBLE);
-    }
-
     private static boolean isAttack(int cat) { return cat == 1 || cat == 2 || cat == 3; }
     private static boolean isBuff(int cat) { return cat == 4 || cat == 9 || cat == 19; }
 
@@ -322,59 +410,6 @@ class AccountPanel extends ScrollView {
         long[] a = new long[ids.size()];
         for (int i = 0; i < a.length; i++) a[i] = ids.get(i);
         setItems(sp, a, labels.toArray(new String[0]), selected);
-    }
-
-    private JSONArray petSkills(long pid) {
-        if (loadoutData == null) return null;
-        if (pid == 0) pid = loadoutData.optLong("active_pet", 0);
-        JSONArray pets = loadoutData.optJSONArray("pets");
-        if (pets != null) for (int i = 0; i < pets.length(); i++) {
-            JSONObject p = pets.optJSONObject(i);
-            if (p != null && p.optLong("id") == pid) return p.optJSONArray("skills");
-        }
-        return null;
-    }
-
-    private void fillPetSkills() {
-        if (loadoutData == null) return;
-        long pid = selectedId(spPet);
-        long keepSkill = spPetSkill.getTag() == null ? prefs.getLong("lo_pet_skill", 0) : selectedId(spPetSkill);
-        long keepBuff = spPetBuff.getTag() == null ? prefs.getLong("lo_pet_buff", 0) : selectedId(spPetBuff);
-        JSONArray sk = petSkills(pid);
-        fillSkills(spPetSkill, sk, true, "Tự động", keepSkill);
-        fillSkills(spPetBuff, sk, false, "Không buff", keepBuff);
-    }
-
-    private void applyLoadout(JSONObject lo) {
-        if (lo == null) return;
-        String sig = lo.toString();
-        if (sig.equals(loadoutSig)) return;
-        loadoutSig = sig;
-        loadoutData = lo;
-        JSONArray pets = lo.optJSONArray("pets");
-        List<Long> ids = new ArrayList<>();
-        List<String> labels = new ArrayList<>();
-        ids.add(0L);
-        labels.add("Giữ pet đang dùng");
-        if (pets != null) for (int i = 0; i < pets.length(); i++) {
-            JSONObject p = pets.optJSONObject(i);
-            if (p == null) continue;
-            ids.add(p.optLong("id"));
-            String nm = p.optString("name");
-            if (p.optLong("id") == lo.optLong("active_pet", -1)) nm += "  (đang dùng)";
-            labels.add(nm);
-        }
-        long[] a = new long[ids.size()];
-        for (int i = 0; i < a.length; i++) a[i] = ids.get(i);
-        long keepPet = spPet.getTag() == null ? prefs.getLong("lo_pet", 0) : selectedId(spPet);
-        setItems(spPet, a, labels.toArray(new String[0]), keepPet);
-        JSONArray cs = lo.optJSONArray("char_skills");
-        long keepCS = spCharSkill.getTag() == null ? prefs.getLong("lo_char_skill", 0) : selectedId(spCharSkill);
-        long keepCB = spCharBuff.getTag() == null ? prefs.getLong("lo_char_buff", 0) : selectedId(spCharBuff);
-        fillSkills(spCharSkill, cs, true, "Tự động", keepCS);
-        fillSkills(spCharBuff, cs, false, "Không buff", keepCB);
-        fillPetSkills();
-        enableLoadout(cs != null && cs.length() > 0);
     }
 
     private static LinearLayout indent(Context c) {
@@ -425,12 +460,9 @@ class AccountPanel extends ScrollView {
                 .putString("npc_losses", npcLosses.getText().toString())
                 .putBoolean("pb_don", cPbDon.isChecked()).putBoolean("pb_doi", cPbDoi.isChecked())
                 .putString("pb_level", pbLevel.getText().toString());
-        if (spPet.getTag() != null) {
-            e.putLong("lo_pet", selectedId(spPet)).putLong("lo_char_skill", selectedId(spCharSkill))
-                    .putLong("lo_pet_skill", selectedId(spPetSkill)).putLong("lo_char_buff", selectedId(spCharBuff))
-                    .putLong("lo_pet_buff", selectedId(spPetBuff));
-        }
-        e.putLong("lo_char_buff_tgt", selectedId(spCharBuffTgt)).putLong("lo_pet_buff_tgt", selectedId(spPetBuffTgt));
+        loWb.save(e);
+        loNpc.save(e);
+        loNk.save(e);
         e.apply();
     }
 
@@ -477,17 +509,13 @@ class AccountPanel extends ScrollView {
         saveChoices();
         JSONObject opts = new JSONObject();
         try {
-            opts.put("world_boss", new JSONObject()
+            opts.put("world_boss", loWb.put(new JSONObject())
                     .put("use_tickets", cWbTickets.isChecked() || cWbBuy.isChecked())
                     .put("auto_buy", cWbBuy.isChecked())
-                    .put("pet_id", selectedId(spPet))
-                    .put("char_skill", selectedId(spCharSkill))
-                    .put("pet_skill", selectedId(spPetSkill))
-                    .put("char_buff", selectedId(spCharBuff))
-                    .put("char_buff_target", selectedId(spCharBuffTgt) == 2 ? "char" : "pet")
-                    .put("pet_buff", selectedId(spPetBuff))
-                    .put("pet_buff_target", selectedId(spPetBuffTgt) == 2 ? "char" : "pet")
                     .put("damage_goal", num(wbGoal, 5000000)));
+            opts.put("loadouts", new JSONObject()
+                    .put("npc40", loNpc.put(new JSONObject()))
+                    .put("nhi_kieu", loNk.put(new JSONObject())));
             opts.put("max_losses", new JSONObject().put("npc40", Math.max(1, num(npcLosses, 3))));
             opts.put("team_dungeon_level", num(pbLevel, 50));
         } catch (Exception ignored) {}
@@ -531,7 +559,8 @@ class AccountPanel extends ScrollView {
         if (boss != null && !boss.isNull(0)) sb.append("   ·   Boss TG ").append(boss.opt(0)).append("/").append(boss.opt(1));
         charLine.setText(sb.toString());
         applyBattle(s.optJSONObject("wb"), s.optJSONObject("battle"));
-        applyLoadout(s.optJSONObject("loadout"));
+        JSONObject lo = s.optJSONObject("loadout");
+        for (LoadoutBox b : new LoadoutBox[]{loWb, loNpc, loNk}) b.apply(lo);
         if (changed) {
             refreshButtons();
             if (listener != null) listener.onStateChanged(this);

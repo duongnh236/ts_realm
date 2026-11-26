@@ -42,8 +42,14 @@ sinh, ở mọi chế độ có bật hỗ trợ (`dau_chuyen_first`).
 **AI đánh 40 NPC** (`npc40_ai: "ts_manager"`), theo thứ tự vai trò của TS Manager: hồi sinh →
 hồi máu toàn party khi máu party < `party_hp_emergency` (50%) → giải khống chế đồng đội → khiên
 trước nếu máu mình ≤ `guard_hp` hoặc địch đông hơn ≥ `guard_outnumbered_by` → khống chế địch →
-giải buff địch / phá khiên → khiên → hồi SP party → đánh (tránh con có Kết Giới, ưu tiên con ít máu).
+giải buff địch / phá khiên → buff người dùng chọn → khiên → hồi SP party → đánh (tránh con có Kết Giới, ưu tiên con ít máu).
 Đặt `npc40_ai: "ts_bot"` để quay về thứ tự cũ của ts_bot.
+
+**Đội hình theo chế độ** (app có 3 khung riêng: Boss TG, 40 NPC, Nhị Kiều; trên Mac ghi vào
+`world_boss` và `loadouts.npc40` / `loadouts.nhi_kieu` trong settings.json): pet ra trận, skill đánh
+của nhân vật / pet, skill buff của nhân vật / pet (buff lên pet hoặc nhân vật, hết buff thì buff lại).
+Skill đánh chọn trong app chỉ dùng ở bước TẤN CÔNG, nên hồi sinh / giải khống chế / giải buff địch /
+hồi máu / khiên vẫn đứng trước. 40 NPC và Nhị Kiều đổi pet lúc bắt đầu, xong thì trả pet và gỡ luật.
 
 Nhiều acc cùng đội không giải trùng một người trong cùng lượt (dùng cơ chế giữ chỗ của ts_bot).
 
