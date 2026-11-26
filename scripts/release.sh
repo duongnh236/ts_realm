@@ -3,7 +3,7 @@
 #
 #   scripts/release.sh 1.2.0                 # tăng phiên bản + build, in hướng dẫn tạo release
 #   scripts/release.sh 1.2.0 "Ghi chú" --publish
-#                                            # thêm: commit + tag v1.2.0 + push + tạo release (cần `gh`)
+#                                            # thêm: commit + tag v1.2.0 + push + tạo release + đính APK
 #
 # Quy ước: tag release = "v" + versionName (vd v1.2.0), đính kèm đúng 1 file .apk.
 # Phải build trên máy này: APK ký bằng ~/.android/debug.keystore, khác khoá thì điện thoại không cho
@@ -44,7 +44,27 @@ if [ "$PUBLISH" = "--publish" ]; then
         echo "==> Đã tạo release v$VER"
         exit 0
     fi
-    echo "Chưa có lệnh gh -> tạo release bằng tay như dưới."
+    # Không có gh: dùng chính tài khoản git đã lưu trong Keychain (cái vừa dùng để push).
+    REPO=duongnh236/ts_realm
+    TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null | sed -n 's/^password=//p')
+    if [ -n "$TOKEN" ]; then
+        BODY=$(python3 -c 'import json,sys;print(json.dumps({"tag_name":sys.argv[1],"name":sys.argv[1],"body":sys.argv[2]}))' "v$VER" "$NOTES")
+        RID=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/releases" -d "$BODY" \
+              | python3 -c 'import sys,json;print(json.loads(sys.stdin.read(),strict=False).get("id",""))')
+        if [ -n "$RID" ]; then
+            curl -s -o /dev/null -w "upload APK: %{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" \
+                 -H "Content-Type: application/vnd.android.package-archive" --data-binary @"$APK" \
+                 "https://uploads.github.com/repos/$REPO/releases/$RID/assets?name=$(basename "$APK")"
+            unset TOKEN
+            echo "==> Đã tạo release v$VER: https://github.com/$REPO/releases/tag/v$VER"
+            exit 0
+        fi
+        unset TOKEN
+        echo "Tạo release qua API không được -> làm bằng tay như dưới."
+    else
+        echo "Không thấy tài khoản GitHub trong Keychain -> tạo release bằng tay như dưới."
+    fi
 fi
 cat <<MSG
 
