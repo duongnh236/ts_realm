@@ -182,7 +182,9 @@ class AccountPanel extends ScrollView {
         actCard.addView(ar);
         btnParty = Ui.button(c, "👥  Chạy party (tab này làm đội trưởng)", Ui.ACCENT);
         btnParty.setOnClickListener(v -> onPartyClick());
-        actCard.addView(btnParty);
+        LinearLayout pr = Ui.row(c);          // Ui.button rộng 0 + weight: phải nằm trong hàng ngang
+        pr.addView(btnParty);
+        actCard.addView(pr);
         actCard.addView(Ui.text(c, "Party: chỉ 40 NPC / Nhị Kiều. Đội trưởng mở trận, các tab chọn làm "
                 + "thành viên tự vào đội và đánh theo. Mọi tab phải đăng nhập, đứng rảnh.", 12, Ui.DIM));
         root.addView(actCard);
