@@ -2325,3 +2325,85 @@ class PetSkillPrefTest(unittest.TestCase):
         with mock.patch("realm.loadout.apply", lambda cl, opts, rules_mod=None, mode=None: seen.update(opts)):
             r._loadout_on("npc40")
         self.assertEqual(seen.get("pet_skill"), 13013)
+
+
+class Npc40Floor38FixTest(unittest.TestCase):
+    """Log 27/11 acc 100653 kẹt tầng 38 (team + solo)."""
+
+    def setUp(self):
+        TsmDecideTest.setUp(self)
+
+    st = TsmDecideTest.st
+
+    def test_dau_chuyen_not_dispelled_again_next_turn(self):
+        cb = self.cb
+        opts = [(1, 0), (1, 1), (1, 2)]
+        mk = lambda turn: self.st(skills_char=[11012], enemy_slots=[2], status_by_kind={(0, 2): {"b": 13021}},
+                                  allies={(3, 2): NS(hp=900, hp_max=1000)}, char=NS(sp=200, hp=900, hp_max=1000),
+                                  enemy_hp={2: 50}, tracker=NS(generation=7, turn=turn, units={}))
+        self.assertEqual(cb.decide_char(mk(4), opts).skill, 11012)      # lượt 4: giải
+        self.assertEqual(cb.decide_char(mk(5), opts), "SHIELD")          # lượt 5 boss buff lại: thôi giải
+        self.assertEqual(cb.decide_char(mk(6), opts), "SHIELD")          # (khiên/đánh của ts_bot)
+        self.assertEqual(cb.decide_char(mk(7), opts).skill, 11012)      # quá 2 lượt: thử giải lại
+
+    def test_heal_before_dau_chuyen_when_party_low(self):
+        st = self.st(skills_char=[11012, 11010], enemy_slots=[2], status_by_kind={(0, 2): {"b": 13021}},
+                     allies={(3, 2): NS(hp=2460, hp_max=8601), (2, 2): NS(hp=1244, hp_max=5984)})
+        self.assertEqual(self.cb.decide_char(st, [(1, 2)]).skill, 11010)
+
+    def test_party_ratio_ignores_dead(self):
+        st = fake_state(allies={(3, 2): NS(hp=900, hp_max=1000), (2, 0): NS(hp=0, hp_max=5000)})
+        self.assertGreater(cr._party_hp_ratio(st), 0.5)
+
+    def test_dau_chuyen_target_avoided(self):
+        self.assertIn((1, 0), sl.avoid_damage_targets({(1, 0): {"b": 13021}}, (0, 1)))
+
+
+class PartyHealTest(unittest.TestCase):
+    def _client(self, units, gen=3):
+        healed = []
+        me = b"ME" * 4
+        c = NS(_label="acc1", self_entity=me, bag_slots={1: [0x6a14, 50]},
+               _pet_skill_rows=[(1, 0xb0a5, 1, 0, []), (2, 0xb170, 1, 0, []), (3, 0xb169, 1, 0, [])],
+               state=NS(in_battle=False, active_pet_id=0xb170, ally_rows=(2, 3)),
+               battle_tracker=NS(generation=gen, units=units))
+        c._heal_unit = lambda target, stat, label, key, kind, **kw: healed.append((target, kind, stat.hp))
+        c.heal_npc40_between_battles = lambda: healed.append("main")
+        return c, healed
+
+    @staticmethod
+    def _u(pid, hp, hp_max, master=b"ME" * 4, kind=4):
+        return NS(role_kind=kind, master_id=master, role_id=pid.to_bytes(2, "little") + b"\0" * 6,
+                  hp=hp, hp_max=hp_max, sp=100, sp_max=100)
+
+    def test_heals_own_generals_once_per_battle(self):
+        from realm import party_heal
+        units = {(2, 0): self._u(0xb0a5, 0, 5000),                       # chết -> 1 HP
+                 (2, 2): self._u(0xb170, 0, 5984),                       # pet đi theo: ts_bot lo
+                 (2, 4): self._u(0xb169, 5000, 5000),                    # đầy rồi
+                 (2, 1): self._u(0xb0a5, 0, 5000, master=b"XX" * 4)}     # của người khác
+        c, healed = self._client(units)
+        party_heal.heal_one(c)
+        self.assertEqual(healed, ["main", (1, "hp", 1), (1, "sp", 1)])
+        party_heal.heal_one(c)                                            # cùng trận: không hồi lại
+        self.assertEqual(healed, ["main", (1, "hp", 1), (1, "sp", 1), "main"])
+
+    def test_leader_heals_members(self):
+        from realm import party_heal
+        lead, h1 = self._client({})
+        mem, h2 = self._client({(2, 0): self._u(0xb0a5, 10, 5000)})
+        mem.running = True
+        party_heal.heal_party(lead, [mem])
+        self.assertEqual(h1, ["main"])
+        self.assertEqual(h2, ["main", (1, "hp", 10), (1, "sp", 10)])
+
+
+class Npc40WinByFloorTest(unittest.TestCase):
+    def test_new_floor_is_win_even_if_marked_defeated(self):
+        from realm import npc40_loop
+        c = FakeNpcClient(["lose", "lose", "lose", "win"])
+        floors = iter([36, 37, 37, 37, 37, 37])
+        why = npc40_loop.run_loop(c, (910, 290), threading.Event(), lambda: None,
+                                  max_consec_losses=3, sleep_fn=lambda s: None, npc40=FakeNpc40Mod,
+                                  floor_fn=lambda: next(floors))
+        self.assertNotIn("liên tiếp", why)       # trận 1 lên tầng 37 = thắng -> chỉ thua 2 liền

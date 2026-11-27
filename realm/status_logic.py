@@ -128,7 +128,9 @@ DISPEL_WORTHY_BUFFS = frozenset((21026, 10010, 10026, 11002, 13021, 10031, 10044
 # Buff dich phai giai TRUOC MOI VIEC (yeu cau user 25/11): Dau Chuyen 13021 (he Phong, fight_way 4).
 TOP_PRIORITY_DISPEL = frozenset((13021,))
 # Dich dang co Ket Gioi: khong dap dame vao, cho giai truoc (DAMAGE_AVOID_ENEMY_BUFF_SKILL_IDS).
-DAMAGE_AVOID_BUFFS = frozenset((10010,)) | REFLECT_BUFFS
+# Dau Chuyen 13021 cung phan dame (doi 50-70% len ca phe danh) -> khong danh vao khi chua giai duoc
+# (log 27/11 21:19-21:21: giai lien 4 luot, boss buff lai, ca doi chet vi khong ai hoi mau).
+DAMAGE_AVOID_BUFFS = frozenset((10010, 13021)) | REFLECT_BUFFS
 # Thu tu uu tien giai cho dong doi (CLEANSE_ALLY_LADDER): NV he Thuy/Dia > NV he Phong/Hoa > NV khac > Tuong.
 # Ma he: 1 Dia, 2 Thuy, 3 Hoa, 4 Phong.
 CLEANSE_ALLY_LADDER = ((1, 2), (3, 4))

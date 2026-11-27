@@ -209,7 +209,7 @@ class Runner:
         pet_switched = self._loadout_on("npc40")
         try:
             t, res = npc40_loop.start(self.c, point, on_loss=lambda: None,
-                                      before_repeat=self.c.heal_npc40_between_battles,
+                                      before_repeat=self._heal_party,
                                       window_open=lambda: in_window(self.window("npc40")),
                                       max_consec_losses=max_consec)
             why = self._wait_thread(t)
@@ -257,7 +257,7 @@ class Runner:
                 done.clear()
                 losses["last"] = False
                 self.c._floor_crawl_started = False
-                if not self.c.start_floor_crawl(ev, on_done=on_done, heal_party=self.c.heal_npc40_between_battles):
+                if not self.c.start_floor_crawl(ev, on_done=on_done, heal_party=self._heal_party):
                     return False
                 why = self._wait_thread(getattr(self.c, "_floor_crawl_thread", None), "nhi_kieu")
                 self.c.stop_floor_crawl()
@@ -273,7 +273,7 @@ class Runner:
                              getattr(self.c, "current_map", None))
                     break
                 log.info("Nhị Kiều: thua lần %d -> hồi đầy máu/mana rồi leo tiếp từ tầng đang đứng", losses["n"])
-                self.c.heal_npc40_between_battles()
+                self._heal_party()
                 time.sleep(3)
         finally:
             self.c.stop_floor_crawl()
@@ -283,6 +283,13 @@ class Runner:
         return True
 
     # ---- party ----
+    def _heal_party(self):
+        """Giữa 2 trận 40 NPC / Nhị Kiều: hồi đầy nhân vật, võ tướng đi theo, võ tướng phụ của mình
+        và của các thành viên party (thành viên không tự hồi vì đang quest_mode)."""
+        from . import party_heal
+        members = (self.party or {}).get("members") if self._party_role() == "leader" else ()
+        party_heal.heal_party(self.c, members or ())
+
     def _party_role(self):
         return (self.party or {}).get("role")
 

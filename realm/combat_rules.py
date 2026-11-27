@@ -35,6 +35,11 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          "boss_style": "auto", "auto_guard_hp": 0.5,
          # AI đánh 40 NPC theo thứ tự vai trò của TS Manager (party_battle_roles_policy)
          "dau_chuyen_first": True,
+         # Giải Đẩu Chuyển xong mà ô đó vẫn có (boss buff lại / giải trượt) -> không giải lại ô đó trong
+         # chừng ấy lượt, đánh con khác (log 27/11 tầng 38: giải 4 lượt liền rồi cả đội chết).
+         "dau_chuyen_retry_gap": 2,
+         # Máu party < party_hp_emergency thì hồi máu TRƯỚC cả giải Đẩu Chuyển.
+         "heal_before_dau_chuyen": True,
          "npc40_ai": "ts_manager", "tsm_modes": ["npc40", "nhi_kieu", "boss"], "party_hp_emergency": 0.5, "guard_hp": 0.5,
          "guard_outnumbered_by": 2,
          # Buff theo chế độ: {"boss"|"npc40"|"nhi_kieu": {"char": {"skill": id, "target": "pet"|"char"},
@@ -102,11 +107,37 @@ def _alive_allies(state):
     return alive or None
 
 
+_top_dispel_at = {}   # (nhóm, thế hệ trận, (hàng, cột)) -> lượt vừa giải Đẩu Chuyển ô đó
+
+
+def _recent_top_dispels(state):
+    """Các ô địch vừa bị giải Đẩu Chuyển trong ``dau_chuyen_retry_gap`` lượt gần đây (cùng trận)."""
+    gap = int(RULES.get("dau_chuyen_retry_gap", 2) or 0)
+    if gap <= 0:
+        return set()
+    gen, turn = _fight_key(state)
+    grp = _group(state)
+    with _lock:
+        for k in [k for k in _top_dispel_at if k[0] == grp and k[1] != gen]:
+            _top_dispel_at.pop(k, None)
+        return {k[2] for k, t in _top_dispel_at.items()
+                if k[0] == grp and k[1] == gen and 0 < turn - t <= gap}
+
+
 def try_top_dispel(combat, state, unit, skills, stat, options):
-    """Đẩu Chuyển trên người địch -> giải trước mọi việc (kể cả hồi sinh)."""
+    """Đẩu Chuyển trên người địch -> giải trước mọi việc (kể cả hồi sinh).
+    Ô vừa giải lượt trước mà vẫn còn Đẩu Chuyển (boss buff lại) thì thôi, không giải lặp mãi."""
     if not RULES.get("dau_chuyen_first", True):
         return None
-    return try_dispel(combat, state, unit, skills, stat, options, only=sl.TOP_PRIORITY_DISPEL)
+    skip = _recent_top_dispels(state)
+    d = try_dispel(combat, state, unit, skills, stat, options, only=sl.TOP_PRIORITY_DISPEL, exclude=skip)
+    if d is not None:
+        gen, turn = _fight_key(state)
+        pos = getattr(d, "_realm_pos", None)
+        if pos is not None:
+            with _lock:
+                _top_dispel_at[(_group(state), gen, pos)] = turn
+    return d
 
 
 def try_cleanse(combat, state, unit, skills, stat, options):
@@ -208,8 +239,9 @@ def try_buff(combat, state, unit, skills, stat, options):
     return combat.Decision(unit, state.my_atype, col, skill, b=row)
 
 
-def try_dispel(combat, state, unit, skills, stat, options, only=None):
-    """``only`` = tập buff giới hạn (vd. chỉ Đẩu Chuyển); None = theo ``dispel_mode``."""
+def try_dispel(combat, state, unit, skills, stat, options, only=None, exclude=()):
+    """``only`` = tập buff giới hạn (vd. chỉ Đẩu Chuyển); None = theo ``dispel_mode``.
+    ``exclude`` = các ô (hàng, cột) không giải lượt này."""
     if not RULES.get("dispel") or _dead(stat) or not getattr(state, "enemy_slots", None):
         return None
     offered = combat._offered_targets(options, state.my_atype)
@@ -221,6 +253,14 @@ def try_dispel(combat, state, unit, skills, stat, options, only=None):
                             worthy_only=RULES.get("dispel_mode", "worthy") != "all")
     if only is not None:
         buffed = {pos: b & only for pos, b in buffed.items() if b & only}
+    if exclude:
+        buffed = {pos: b for pos, b in buffed.items() if pos not in exclude}
+    if only is None:
+        # Ô vừa giải Đẩu Chuyển mà boss buff lại: bước giải buff thường cũng không đuổi theo nó
+        recent = _recent_top_dispels(state)
+        if recent:
+            buffed = {pos: (b - sl.TOP_PRIORITY_DISPEL if pos in recent else b) for pos, b in buffed.items()}
+            buffed = {pos: b for pos, b in buffed.items() if b}
     pick = sl.pick_dispel(skills, stat.sp, combat._skill_cost, buffed)
     if pick is None:
         return None
@@ -233,7 +273,12 @@ def try_dispel(combat, state, unit, skills, stat, options, only=None):
         return None
     log.info("[%s] giải buff boss ô %d/%d (%s) -> skill %s", state.label, b1, b2,
              ", ".join(sl.skill_label(s) for s in sorted(buffed[(b1, b2)])), skill)
-    return combat.Decision(unit, state.my_atype, col, skill, b=b1)
+    d = combat.Decision(unit, state.my_atype, col, skill, b=b1)
+    try:
+        d._realm_pos = (b1, b2)
+    except Exception:
+        pass
+    return d
 
 
 def guard_allowed(state, stat) -> bool:
@@ -291,7 +336,10 @@ def danger_target(combat, state, offered, pos):
 
 
 def _party_hp_ratio(state):
-    units = [u for u in (getattr(state, "allies", None) or {}).values() if getattr(u, "hp_max", 0) > 0]
+    """Tỉ lệ máu các ô phe ta CÒN SỐNG (con đã chết thì hồi máu toàn party cũng không cứu được, để
+    hồi sinh lo)."""
+    units = [u for u in (getattr(state, "allies", None) or {}).values()
+             if getattr(u, "hp_max", 0) > 0 and getattr(u, "hp", 0) > 0]
     if not units:
         return 1.0
     return sum(max(0, u.hp) for u in units) / float(sum(u.hp_max for u in units))
@@ -357,6 +405,7 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
         return attack()
 
     steps = (
+        heal if RULES.get("heal_before_dau_chuyen", True) else (lambda: None),
         lambda: try_top_dispel(combat, state, unit, skills, stat, options),
         lambda: combat._try_revive(state, unit, skills, stat, options),
         heal,

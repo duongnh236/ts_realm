@@ -103,6 +103,10 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
 
     consec = 0
     thu_lai = 0
+    try:
+        tang_truoc = int(floor_fn() or 0)
+    except Exception:
+        tang_truoc = 0
     while active():
         got = _wait_end(client, npc40, prompt_seq, battles, stop_event, sleep_fn, poll_interval)
         if got == "end":
@@ -140,7 +144,16 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
             continue
 
         thu_lai = 0
-        if client._npc40_last_defeated:
+        try:
+            tang = int(floor_fn() or 0)
+        except Exception:
+            tang = 0
+        # Có Thắng Lệnh tầng mới = thắng, kể cả khi chốt HP cuối báo có người nằm (log 27/11 21:18:
+        # qua tầng 37 mà vẫn ghi "thua").
+        len_tang = bool(tang and tang_truoc and tang > tang_truoc)
+        if tang:
+            tang_truoc = max(tang_truoc, tang)
+        if client._npc40_last_defeated and not len_tang:
             consec += 1
             log.warning("[%s] 40NPC: thua 1 trận (liên tiếp %d/%s) -> hồi máu/mana rồi đánh tiếp",
                         lbl, consec, gioi_han)
@@ -148,10 +161,6 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
             consec = 0
         if thua_du(consec):
             return ket_thuc("thua %d trận liên tiếp" % consec)
-        try:
-            tang = int(floor_fn() or 0)
-        except Exception:
-            tang = 0
         if tang:
             client._npc40_floor = tang
             log.info("[%s] 40NPC: đã qua tầng %d/40 (Thắng Lệnh %d trong túi)", lbl, tang, tang)
