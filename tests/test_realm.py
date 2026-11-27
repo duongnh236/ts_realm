@@ -167,11 +167,12 @@ class NpcDangerTest(unittest.TestCase):
         from realm import npc_danger as nd
         self.assertGreater(len(nd.DANGER), 500)
         self.assertEqual(nd.tier_of(45276), 3)   # Cuồng Đại Kiều: Đẩu Chuyển
-        self.assertEqual(nd.tier_of(45275), 3)   # Cuồng Tiểu Kiều: Linh Kính
+        self.assertEqual(nd.tier_of(45275), 2)   # Cuồng Tiểu Kiều: Linh Kính (phản khống chế)
         self.assertEqual(nd.tier_of(10002), 0)   # Trương Bảo: skill thường
         info = {20014: {"splash": 5, "cat": 15}, 10012: {"splash": 8, "cat": 2}, 14021: {"splash": 1}}
         self.assertEqual(nd.classify([14021], info)[0], 0)          # Hỗn Loạn đơn: không tính
-        self.assertEqual(nd.classify([20014], info), (3, [20014]))  # Tứ Nhân Hỗn Loạn
+        self.assertEqual(nd.classify([20014], info), (2, [20014]))  # Tứ Nhân Hỗn Loạn (4 mục tiêu)
+        self.assertEqual(nd.classify([21041], info), (3, [21041]))  # Bá Vương Trảm: hỗn loạn toàn thể
         self.assertEqual(nd.classify([10012], info), (1, [10012]))  # Long Trời Lỡ Đất
 
     def test_dangerous_first_then_low_hp(self):
@@ -188,7 +189,7 @@ class NpcDangerTest(unittest.TestCase):
         cr.install(cb)
         st = self._state({0: 10002, 1: 45275, 2: 45276}, {0: 100, 1: 900, 2: 800},
                          status_by_kind={(0, 2): {"b": 10010}})
-        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 1)    # con Kết Giới chờ giải
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 1)    # con Kết Giới chờ giải, đánh mức 2
         st = self._state({0: 10002, 2: 45276}, {0: 100, 2: 800})
         st.realm_mode = None                                       # farm thường: như cũ
         self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 0)
