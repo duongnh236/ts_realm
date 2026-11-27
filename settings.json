@@ -8,8 +8,8 @@
   "acc1": {"username": "", "password": "", "label": "acc1"}
  },
  "rules": {"cleanse": true, "dispel": true, "dispel_mode": "worthy", "avoid_barrier": true, "boss_style": "auto", "auto_guard_hp": 0.5,
-           "dau_chuyen_first": true, "npc40_ai": "ts_manager", "tsm_modes": ["npc40", "nhi_kieu", "boss"], "reflect_policy": "hold", "party_hp_emergency": 0.5, "guard_hp": 0.5, "guard_outnumbered_by": 2},
- "world_boss": {"use_tickets": true, "sp_restore_below": 0.3, "damage_goal": 5000000, "ticket_ids": [46629, 46614]},
+           "dau_chuyen_first": true, "npc40_ai": "ts_manager", "tsm_modes": ["npc40", "nhi_kieu", "boss"], "reflect_policy": "hold", "boss_skip": ["heal"], "boss_sp_below": 0.3, "boss_sp_item": true, "party_hp_emergency": 0.5, "guard_hp": 0.5, "guard_outnumbered_by": 2},
+ "world_boss": {"use_tickets": true, "ready_ratio": 0.95, "stall_seconds": 90, "damage_goal": 5000000, "ticket_ids": [46629, 46614]},
  "team_dungeon_level": 50,
  "max_losses": {"npc40": 0, "nhi_kieu": 0},
  "windows": {

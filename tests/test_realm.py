@@ -873,6 +873,7 @@ class BossTsmTest(unittest.TestCase):
     def setUp(self):
         fresh_rules()
         cr.RULES.update({"tsm_modes": ["npc40", "nhi_kieu", "boss"], "reflect_policy": "hold",
+                         "boss_skip": ["heal"], "boss_sp_below": 0.3,
                          "npc40_ai": "ts_manager", "mode_buffs": {}, "boss_buffs": {}})
         self.cb = cb = fake_combat()
         cb.config.SKILL_HEAL_ALL, cb.config.HEAL_SP_COST = 11010, 42
@@ -942,7 +943,7 @@ class BossTsmTest(unittest.TestCase):
 
     def test_no_heal_or_sp_skill_in_boss(self):
         cb = self.cb
-        cb._try_sp_restore = lambda *a: "SP_RESTORE"
+        cb._try_sp_restore = lambda *a: "SP_RESTORE"    # bản ts_bot không dùng trong boss
         st = self.st(skills_char=[11010, 103], char=NS(sp=350, hp=900, hp_max=1000),
                      allies={(3, 2): NS(hp=50, hp_max=1000), (3, 1): NS(hp=60, hp_max=1000)})
         self.assertEqual(cb.decide_char(st, [(1, 2)]).skill, 103)
@@ -950,23 +951,76 @@ class BossTsmTest(unittest.TestCase):
         st2 = self.st(skills_char=[11010, 103], char=NS(sp=350, hp=900, hp_max=1000),
                       allies={(3, 2): NS(hp=50, hp_max=1000), (3, 1): NS(hp=60, hp_max=1000)})
         self.assertEqual(cb.decide_char(st2, [(1, 2)]).skill, 11010)
-        cr.RULES["boss_skip"] = ["heal", "sp_restore"]
+        cr.RULES["boss_skip"] = ["heal"]
 
-    def test_sp_saver_between_fights(self):
+    def test_boss_sp_restore_below_30(self):
+        cb = self.cb
+        cb.pick_sp_restore_skill = lambda sk: 11030 if 11030 in sk else None
+        self.COST[11030] = 40
+        allies = {(3, 2): NS(hp=900, hp_max=1000, sp=100, sp_max=1000)}
+        st = self.st(skills_char=[11030, 103], char=NS(sp=350, sp_max=1000, hp=900, hp_max=1000), allies=allies)
+        d = cb.decide_char(st, [(1, 2)])
+        self.assertEqual((d.skill, d.target, d.b), (11030, 2, 3))
+        allies = {(3, 2): NS(hp=900, hp_max=1000, sp=400, sp_max=1000)}
+        st2 = self.st(skills_char=[11030, 103], char=NS(sp=350, sp_max=1000, hp=900, hp_max=1000), allies=allies)
+        self.assertEqual(cb.decide_char(st2, [(1, 2)]).skill, 103)      # SP 40% -> đánh
+
+    def test_boss_sp_item_when_no_skill(self):
+        cb = self.cb
+        cb.pick_sp_restore_skill = lambda sk: None
+        cb._hang_cua = lambda st, u: 3 if u == CHAR else 2
+        cr._item_used.clear()
+        pending = {}
+        st = self.st(skills_char=[103], char=NS(sp=350, sp_max=1000, hp=900, hp_max=1000),
+                     my_atype=2, allies={(3, 2): NS(hp=900, hp_max=1000, sp=350, sp_max=1000),
+                                         (2, 2): NS(hp=900, hp_max=1000, sp=50, sp_max=1000)},
+                     realm_item_pending=pending, realm_sp_item=lambda: (7, 0x6a12, 265),
+                     tracker=NS(generation=1, turn=1))
+        d = cb.decide_char(st, [(1, 2)])
+        self.assertEqual((d.skill, d.b, d.target), (0x6a12, 2, 2))   # nhân vật cho pet uống thuốc SP
+        self.assertEqual(pending, {(3, 2): 0x6a12})
+        st.last_atk_gen_char = None
+        d2 = cb.decide_char(st, [(1, 2)])                            # cùng lượt -> không cho uống lại
+        self.assertEqual(d2.skill, 103)
+        st3 = self.st(pet_skills=[102], pet=NS(sp=50, sp_max=1000, hp=900, hp_max=1000),
+                      realm_item_pending={}, realm_sp_item=lambda: (7, 0x6a12, 265))
+        self.assertEqual(cb.decide_pet(st3, [(1, 2)]).skill, 10000)   # pet không dùng thuốc, hết SP -> đánh thường
+
+    def test_item_payload_rewrite(self):
         from realm import world_boss as wb
-        calls = []
-        c = NS(_label="a", bag_slots={1: (1, 1)}, active_pet_slot=1, in_combat=lambda: False,
-               state=NS(in_battle=False, solo_multipet=False,
-                        char=NS(hp=500, hp_max=1000, sp=400, sp_max=1000),
-                        pet=NS(hp=500, hp_max=1000, sp=100, sp_max=1000)),
-               heal_full=lambda force=False: calls.append("orig"))
-        c._heal_unit = lambda t, u, lab, key, kind, thr_override=None, force=False: calls.append(key)
-        saver = wb.SpSaver(c, 0.3)
-        c.heal_full(force=True)
-        self.assertEqual(calls, ["hp_char", "hp_pet", "sp_pet"])   # SP nhân vật 40% -> không uống
-        saver.remove()
-        c.heal_full()
-        self.assertEqual(calls[-1], "orig")
+        pending = {(3, 2): 0x6a12}
+        pl = bytes.fromhex("01000302020212 6a5680".replace(" ", ""))
+        self.assertEqual(wb.item_payload(pl, pending).hex(), "02000302020212 6a5680".replace(" ", ""))
+        self.assertEqual(pending, {})
+        atk = bytes.fromhex("0100030200021d2b0178")
+        self.assertEqual(wb.item_payload(atk, {(3, 2): 0x6a12}), atk)   # đánh thường giữ nguyên
+
+    def test_not_ready_after_heal(self):
+        from realm import world_boss as wb
+        healed = []
+        c = NS(_label="a", in_combat=lambda: False, heal_full=lambda: healed.append(1),
+               state=NS(char=NS(hp=1000, hp_max=1000, sp=0, sp_max=682),
+                        pet=NS(hp=2, hp_max=5984, sp=100, sp_max=100)))
+        why = wb.not_ready(c, 0.95)
+        self.assertEqual(healed, [1])
+        self.assertIn("SP nhân vật 0/682", why)
+        self.assertIn("HP pet 2/5984", why)
+        c.state.char.sp, c.state.pet.hp = 682, 5984
+        self.assertIsNone(wb.not_ready(c, 0.95))
+
+    def test_stall_watch_closes(self):
+        from realm import world_boss as wb
+        closed = []
+        c = NS(_label="a", running=True, state=NS(in_battle=True), close=lambda: closed.append(1))
+        tap = NS(last=time.time() - 100)
+        w = wb.StallWatch(c, tap, stall_s=5)
+        for _ in range(40):
+            if w.stalled:
+                break
+            time.sleep(0.1)
+        w.remove()
+        self.assertTrue(w.stalled)
+        self.assertEqual(closed, [1])
 
     def test_boss_buff_mode(self):
         st = self.st()

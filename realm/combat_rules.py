@@ -27,6 +27,7 @@ CLEANSE_NAMES = {
 
 _lock = threading.Lock()
 _claims = {}
+_item_used = {}
 _installed = False
 RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrier": True,
          "boss_style": "auto", "auto_guard_hp": 0.5,
@@ -41,8 +42,9 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          # Boss TG: mọi con địch còn lại đều có Kim Chung Tráo (phản dame) mà không giải được ->
          # "hold" = phòng thủ chờ hết / chờ đồng đội giải, "attack" = vẫn đánh.
          "reflect_policy": "hold",
-         # Boss TG: bước bỏ qua trong trận ("heal" = skill hồi máu, "sp_restore" = skill hồi SP)
-         "boss_skip": ["heal", "sp_restore"]}
+         # Boss TG: bước bỏ qua trong trận ("heal" = skill hồi máu, "sp_restore" = skill hồi SP).
+         # Hồi SP trong boss chỉ khi có người SP < boss_sp_below.
+         "boss_skip": ["heal"], "boss_sp_below": 0.3}
 
 _realm_rules = threading.local()   # .only = True: chỉ đọc luật skill do app chọn
 
@@ -303,8 +305,12 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
     if getattr(stat, "hp_max", 0) > 0 and getattr(stat, "hp", 0) <= 0:
         return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
     heal = (lambda: None) if "heal" in skip else (lambda: _party_heal(combat, state, unit, skills, stat, tag))
-    sp_restore = (lambda: None) if "sp_restore" in skip else (
-        lambda: combat._try_sp_restore(state, unit, skills, stat))
+    if "sp_restore" in skip:
+        sp_restore = (lambda: None)
+    elif getattr(state, "realm_mode", None) == "boss":
+        sp_restore = (lambda: boss_sp_restore(combat, state, unit, skills, stat))
+    else:
+        sp_restore = (lambda: combat._try_sp_restore(state, unit, skills, stat))
     steps = (
         lambda: try_top_dispel(combat, state, unit, skills, stat, options),
         lambda: combat._try_revive(state, unit, skills, stat, options),
@@ -324,6 +330,76 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
         if d is not None:
             return d
     return attack()
+
+
+def _low_sp_target(combat, state, unit, stat, thr):
+    """Ô (hàng, cột) phe ta còn sống có SP thấp nhất dưới ``thr``; None nếu không ai."""
+    cands = {}
+    spmax = getattr(state, "ally_spmax", None) or {}
+    for key, u in (getattr(state, "allies", None) or {}).items():
+        if getattr(u, "hp", 0) <= 0:
+            continue
+        mx = spmax.get(key, getattr(u, "sp_max", 0)) or 0
+        if mx > 0:
+            cands[key] = getattr(u, "sp", 0) / mx
+    at = state.my_atype
+    own = ((getattr(state, "char_row", 3), at, getattr(state, "char", None)),
+           (2, at, getattr(state, "pet", None)))
+    for row, col, u in own:
+        if u is None or (row, col) in cands or getattr(u, "hp_max", 0) > 0 and getattr(u, "hp", 0) <= 0:
+            continue
+        mx = getattr(u, "sp_max", 0) or 0
+        if mx > 0:
+            cands[(row, col)] = getattr(u, "sp", 0) / mx
+    low = [(r, k) for k, r in cands.items() if r < thr]
+    return min(low)[1] if low else None
+
+
+def boss_sp_restore(combat, state, unit, skills, stat):
+    """Boss TG: có người trong đội (kể cả chính mình / pet) SP < ``boss_sp_below`` (30%):
+      1) có skill hồi SP toàn đội (Toàn Hồi Ma, cat 6) và đủ SP -> dùng skill;
+      2) không thì NHÂN VẬT dùng thuốc SP trong túi lên người đó (C:050-002, capture 27/11 11:31).
+    ts_bot tắt hồi SP trong boss nên phải tự làm ở đây."""
+    if _dead(stat):
+        return None
+    thr = float(RULES.get("boss_sp_below", 0.3))
+    low = _low_sp_target(combat, state, unit, stat, thr)
+    if low is None:
+        return None
+    hc = combat._hang_char_ta(state) if hasattr(combat, "_hang_char_ta") else getattr(state, "char_row", 3)
+    tag = "char" if unit == combat.config.UNIT_CHAR else "pet"
+    pick = getattr(combat, "pick_sp_restore_skill", None)
+    spr = pick(skills or ()) if pick else None
+    if spr is not None and stat.sp >= combat._skill_cost(spr):
+        claim = getattr(combat, "_claim_support_action", None)
+        if claim is None or claim(state, "heal_sp", (hc, low[1]), state.label + ":" + tag + ":spr", stat.sp,
+                                  getattr(combat, "_sprestore_decide", None)):
+            log.info("[%s] Boss TG: SP ô %s dưới %d%% -> skill hồi SP toàn đội", state.label, low, int(thr * 100))
+            return combat.Decision(unit, state.my_atype, low[1], spr, b=hc)
+    if unit != combat.config.UNIT_CHAR or not RULES.get("boss_sp_item", True):
+        return None
+    finder = getattr(state, "realm_sp_item", None)
+    pending = getattr(state, "realm_item_pending", None)
+    if finder is None or pending is None:
+        return None
+    gen, turn = _fight_key(state)
+    with _lock:
+        if _item_used.get(_group(state)) == (gen, turn, low):
+            return None              # đã cho thuốc ô này lượt này
+    try:
+        found = finder()
+    except Exception:
+        found = None
+    if not found:
+        return None
+    slot, tid, heal = found
+    src = (combat._hang_cua(state, unit) if hasattr(combat, "_hang_cua") else hc, state.my_atype)
+    pending[src] = int(tid)
+    with _lock:
+        _item_used[_group(state)] = (gen, turn, low)
+    log.info("[%s] Boss TG: SP ô %s dưới %d%% -> nhân vật dùng thuốc 0x%04x (+%d SP) lên ô đó",
+             state.label, low, int(thr * 100), int(tid), int(heal or 0))
+    return combat.Decision(unit, state.my_atype, low[1], int(tid), b=low[0])
 
 
 def best_attack_skill(combat, skills, sp):
@@ -430,10 +506,10 @@ def install(combat, rules: dict = None):
 
     def _boss(state, unit, skills, stat, options, tag, spam, fire_min):
         # Boss TG: không dùng skill chọn trong app / luật riêng, AI TS Manager + đánh skill SP cao nhất
-        # Không dùng skill hồi máu / hồi SP trong trận boss (đã có hồi sinh) -> dồn hết lượt vào dame.
+        # Không dùng skill hồi máu trong trận boss (đã có hồi sinh); hồi SP chỉ khi SP < 30%.
         return tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min,
                           attack=lambda: boss_attack(combat, state, unit, skills, stat, options),
-                          skip=tuple(RULES.get("boss_skip", ("heal", "sp_restore"))))
+                          skip=tuple(RULES.get("boss_skip", ("heal",))))
 
     def decide_char(state, options, first_turn=False):
         cfg = combat.config

@@ -117,9 +117,11 @@ class DamageTap:
     def __init__(self, client):
         self.c = client
         self.fight_max = None
+        self.last = time.time()
         orig = client._dispatch
 
         def _dispatch(opcode, pkt):
+            self.last = time.time()
             try:
                 dmg = fight_damage_from_packet(opcode, pkt)
                 if dmg is not None and (self.fight_max is None or dmg > self.fight_max):
@@ -133,53 +135,107 @@ class DamageTap:
 
     def reset(self):
         self.fight_max = None
+        self.last = time.time()
 
     def remove(self):
         self.c._dispatch = self._orig
 
 
-class SpSaver:
-    """Giữa các trận Boss TG: ts_bot ``heal_full`` hồi FULL HP+SP bằng thuốc trước/sau mỗi trận.
-    Đổi lại: HP vẫn hồi đầy, SP chỉ uống thuốc khi xuống dưới ``ratio`` (mặc định 30%) SP tối đa."""
+def not_ready(client, ratio=0.95):
+    """Hồi FULL HP/SP (thuốc) rồi kiểm tra. Trả lý do (chuỗi) nếu nhân vật / pet chưa đủ ``ratio``
+    HP và SP (thường là hết thuốc), None nếu sẵn sàng vào trận."""
+    try:
+        if not client.in_combat():
+            client.heal_full()
+    except Exception as exc:
+        log.warning("[%s] Boss TG: hồi máu/SP lỗi: %s", getattr(client, "_label", "?"), exc)
+    st = client.state
+    low = []
+    for name, u in (("nhân vật", getattr(st, "char", None)), ("pet", getattr(st, "pet", None))):
+        if u is None:
+            continue
+        for kind, cur, mx in (("HP", u.hp, u.hp_max), ("SP", u.sp, u.sp_max)):
+            if mx and mx > 0 and cur < mx * float(ratio):
+                low.append("%s %s %d/%d" % (kind, name, cur, mx))
+    return ", ".join(low) or None
 
-    def __init__(self, client, ratio=0.3):
-        self.c, self.ratio = client, float(ratio)
-        self._orig = getattr(client, "heal_full", None)
-        if self._orig is not None:
-            client.heal_full = self.heal_full
 
-    def _need_sp(self, unit):
-        mx = getattr(unit, "sp_max", 0) or 0
-        return mx > 0 and getattr(unit, "sp", 0) < mx * self.ratio
+class StallWatch:
+    """Trận Boss TG mà ``stall_s`` giây không nhận gói nào từ server -> coi là treo, ngắt kết nối
+    (log 26/11: gửi lượt 1 xong im 11 phút tới khi server cắt, mất vé cuối)."""
 
-    def heal_full(self, force=False):
-        c = self.c
-        st = c.state
-        if getattr(st, "solo_multipet", False) or not hasattr(c, "_heal_unit"):
-            return self._orig(force=force)
-        busy = st.in_battle if force else c.in_combat()
-        if busy or not c.bag_slots:
-            return
-        ch, pet = st.char, st.pet
-        if ch.hp_max > 0:
-            c._heal_unit(0, ch, "char", "hp_char", "hp", thr_override=1.0, force=force)
-            if self._need_sp(ch):
-                log.info("[%s] Boss TG: SP nhân vật %d/%d < %d%% -> uống thuốc SP", c._label, ch.sp,
-                         ch.sp_max, int(self.ratio * 100))
-                c._heal_unit(0, ch, "char", "sp_char", "sp", thr_override=1.0, force=force)
-        if pet.hp_max > 0:
-            slot = getattr(c, "active_pet_slot", None) or 1
-            if pet.hp <= 0:
-                pet.hp = 1
-            c._heal_unit(slot, pet, "pet", "hp_pet", "hp", thr_override=1.0, force=force)
-            if self._need_sp(pet):
-                log.info("[%s] Boss TG: SP pet %d/%d < %d%% -> uống thuốc SP", c._label, pet.sp,
-                         pet.sp_max, int(self.ratio * 100))
-                c._heal_unit(slot, pet, "pet", "sp_pet", "sp", thr_override=1.0, force=force)
+    def __init__(self, client, tap, stall_s=90):
+        self.c, self.tap, self.stall_s = client, tap, float(stall_s)
+        self.stalled = False
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._loop, name="wb-stall", daemon=True)
+        self._t.start()
+
+    def _loop(self):
+        while not self._stop.wait(2.0):
+            if not self.c.running or not getattr(self.c.state, "in_battle", False):
+                continue
+            idle = time.time() - self.tap.last
+            if idle >= self.stall_s:
+                self.stalled = True
+                log.warning("[%s] Boss TG: trận %ds không có gói nào từ server -> coi là treo, ngắt kết nối",
+                            self.c._label, int(idle))
+                try:
+                    self.c.close()
+                except Exception:
+                    pass
+                return
 
     def remove(self):
-        if self._orig is not None:
-            self.c.heal_full = self._orig
+        self._stop.set()
+
+
+OP_COMBAT = 0x32
+
+
+def item_payload(payload, pending):
+    """Lệnh đánh ts_bot dựng ``01 00 hàng cột b đích skill(2) đuôi(2)``. Nếu nguồn (hàng, cột) đang chờ
+    dùng thuốc và skill == mã thuốc -> đổi thành lệnh DÙNG ĐỒ TRONG TRẬN ``02 00 ... mã đồ(2) đuôi``
+    (capture 27/11 11:31 + 11:34: ``02 00 03 02 02 02 126a xx yy`` = nhân vật ô 3/2 cho pet ô 2/2
+    uống Thuốc Hoàng Cân 0x6a12, server trả ``S:050-001 ... 394a ... 1a a500`` = +165 SP).
+    Capture 11:44: nhân vật tự uống ``02 00 03 02 03 02 126a ..`` -> server +165 SP ô 3/2 (đã kiểm)."""
+    if len(payload) < 8 or payload[:2] != b"\x01\x00":
+        return payload
+    src = (payload[2], payload[3])
+    tid = pending.get(src)
+    if tid is None or int.from_bytes(payload[6:8], "little") != int(tid):
+        return payload
+    pending.pop(src, None)
+    return b"\x02\x00" + payload[2:]
+
+
+class ItemInBattle:
+    """Cho combat_rules dùng thuốc SP trong trận Boss TG: tìm thuốc SP trong túi + sửa gói gửi đi."""
+
+    def __init__(self, client):
+        self.c = client
+        st = client.state
+        self.pending = {}
+        st.realm_item_pending = self.pending
+        finder = getattr(client, "_slot_for_known", None)
+        st.realm_sp_item = (lambda: finder("sp", set())) if finder else None
+        self._orig = client.send
+
+        def send(opcode, payload, *a, **kw):
+            if opcode == OP_COMBAT and self.pending:
+                try:
+                    payload = item_payload(payload, self.pending)
+                except Exception:
+                    pass
+            return self._orig(opcode, payload, *a, **kw)
+
+        client.send = send
+
+    def remove(self):
+        self.c.send = self._orig
+        st = self.c.state
+        st.realm_item_pending = None
+        st.realm_sp_item = None
 
 
 def find_ticket(bag_slots, ticket_ids=TICKET_IDS):
@@ -210,7 +266,9 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
         log.info("[%s] Boss TG: chưa đọc được số lượt từ server -> thử vào trận", client._label)
     unknown_fights = 0
     tap = DamageTap(client)
-    saver = SpSaver(client, opts.get("sp_restore_below", 0.3))
+    ready_ratio = float(opts.get("ready_ratio", 0.95) or 0)
+    watch = StallWatch(client, tap, opts.get("stall_seconds", 90))
+    items = ItemInBattle(client) if hasattr(client, "send") else None
     did_any = False
     blind = False
     why = "đủ vòng lặp tối đa"
@@ -232,9 +290,17 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
                 if unknown_fights >= mx:
                     why = "đã thử %d trận, vẫn chưa đọc được số lượt" % unknown_fights
                     break
+                low = not_ready(client, ready_ratio) if ready_ratio else None
+                if low:
+                    why = "chưa hồi đầy (%s) — có thể hết thuốc" % low
+                    break
                 log.info("[%s] Boss TG: trận thứ %d (chưa rõ số lượt)", client._label, unknown_fights + 1)
                 tap.reset()
-                if not client.do_world_boss(heal_after=True):
+                ok = client.do_world_boss(heal_after=True)
+                if watch.stalled:
+                    why = "trận bị treo, đã ngắt kết nối"
+                    break
+                if not ok:
                     why = "không vào được trận (có thể đã hết lượt hôm nay)"
                     break
                 did_any = True
@@ -274,6 +340,10 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
                              list(ticket_ids), len(bag), bag[:60])
                     why = "hết vé (dame hôm nay %s/%s)" % (format(total, ","), format(goal, ","))
                     break
+                low = not_ready(client, ready_ratio) if ready_ratio else None
+                if low:
+                    why = "chưa hồi đầy (%s) — có thể hết thuốc, không dùng vé" % low
+                    break
                 slot, tid, cnt = t
                 ok, left = client.use_slot_wait(slot, target=0)
                 if not ok:
@@ -284,9 +354,17 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
                          client._label, tid, slot, left)
                 time.sleep(1.0)
                 continue
+            low = not_ready(client, ready_ratio) if ready_ratio else None
+            if low:
+                why = "chưa hồi đầy (%s) — có thể hết thuốc" % low
+                break
             log.info("[%s] Boss TG: lượt %d/%d", client._label, cur, mx)
             tap.reset()
-            if not client.do_world_boss(heal_after=True):
+            ok = client.do_world_boss(heal_after=True)
+            if watch.stalled:
+                why = "trận bị treo, đã ngắt kết nối"
+                break
+            if not ok:
                 why = "không vào được trận"
                 break
             did_any = True
@@ -301,7 +379,9 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
                 log.info("[%s] Boss TG: trận này %s dame, hôm nay %s/%s", client._label,
                          format(tap.fight_max, ","), format(total, ","), format(goal, ","))
     finally:
-        saver.remove()
+        watch.remove()
+        if items is not None:
+            items.remove()
         tap.remove()
     log.info("[%s] Boss TG: dừng — %s", client._label, why)
     return did_any, why

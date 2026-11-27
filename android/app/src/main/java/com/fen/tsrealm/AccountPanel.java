@@ -304,7 +304,7 @@ class AccountPanel extends ScrollView {
             box.addView(pair(c, petBuff, petBuffTgt));
             box.addView(Ui.text(c, withSkills
                     ? "Skill chưa học / thiếu SP thì bot tự đánh như cũ. Hồi sinh, giải khống chế, giải buff địch vẫn được ưu tiên trước; hết buff thì buff lại."
-                    : "Đánh bằng skill gây dame tốn SP cao nhất còn đủ SP. Ưu tiên: giải Đẩu Chuyển, hồi sinh, giải khống chế, giải buff boss (cả Kim Chung Tráo), buff; không dùng skill hồi máu / hồi SP trong trận; boss có Kim Chung Tráo mà chưa giải được thì phòng thủ chờ. Giữa các trận chỉ uống thuốc SP khi SP dưới 30%.", 12, Ui.DIM));
+                    : "Đánh bằng skill gây dame tốn SP cao nhất còn đủ SP. Ưu tiên: giải Đẩu Chuyển, hồi sinh, giải khống chế, giải buff boss (cả Kim Chung Tráo), buff; không dùng skill hồi máu trong trận, ai SP dưới 30% thì dùng skill hồi SP, không có skill thì nhân vật cho uống thuốc SP trong túi; boss có Kim Chung Tráo mà chưa giải được thì phòng thủ chờ. Trước mỗi trận hồi đầy HP/SP, hết thuốc thì dừng (không đốt vé); trận treo 90 giây thì ngắt.", 12, Ui.DIM));
             String[] tg = {"lên Pet", "lên Nhân vật"};
             setItems(charBuffTgt, new long[]{1, 2}, tg, prefs.getLong(prefix + "char_buff_tgt", 1));
             setItems(petBuffTgt, new long[]{1, 2}, tg, prefs.getLong(prefix + "pet_buff_tgt", 1));
