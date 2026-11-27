@@ -137,7 +137,7 @@ class Runner:
         except Exception as exc:
             log.warning("[%s] Boss TG: không áp được đội hình (%s) -> đánh tự động", account, exc)
         self._support(True)
-        self.c.state.realm_mode = "boss"      # AI TS Manager + skill atk SP cao nhất (combat_rules)
+        self.c.state.realm_mode = "boss"      # AI TS Manager + skill dame 1 mục tiêu cao nhất (combat_rules)
         try:
             ok, _why = wb.run(self.c, account, day, dlog, opts, cho_phep=self._cho_phep)
             return ok

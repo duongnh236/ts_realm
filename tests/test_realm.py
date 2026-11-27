@@ -1687,8 +1687,21 @@ class WeaponSkillTest(unittest.TestCase):
         comb = NS(config=cfg, CC_SKILLS=frozenset(), _skill_cost=lambda s: info[s]["cost"],
                   _is_attack=lambda s: info[s]["cat"] in (1, 2))
         skills = [13013, self.EX]
-        self.assertEqual(cr.best_attack_skill(comb, skills, 200), self.EX)
-        self.assertEqual(cr.best_attack_skill(comb, skills, 60), 13013)          # thiếu SP cho EX
+        from unittest import mock
+        from realm import skill_power
+        with mock.patch.dict(skill_power.POWER, {self.EX: skill_power.POWER[13043]}):   # mã giả = Cường Chấn Điện
+            self.assertEqual(cr.best_attack_skill(comb, skills, 200), self.EX)
+            self.assertEqual(cr.best_attack_skill(comb, skills, 60), 13013)          # thiếu SP cho EX
+
+    def test_boss_skill_by_single_target_damage(self):
+        """Wiki: Long Trời Lỡ Đất x0,78 nhưng đánh toàn đội chỉ ăn 1/3; Liên kích x1,5975 > Loạn kích x1,11."""
+        info = {10012: 50, 10001: 9, 13010: 40, 13013: 49}
+        comb = NS(config=NS(SKILL_NORMAL=10000), CC_SKILLS=frozenset(), _skill_cost=lambda s: info[s],
+                  _is_attack=lambda s: True)
+        self.assertEqual(cr.best_attack_skill(comb, [10001, 10012], 200), 10001)
+        self.assertEqual(cr.best_attack_skill(comb, [13013, 13010], 200), 13010)
+        self.assertEqual(cr.best_attack_skill(comb, [13013, 13010], 45), 13010)
+        self.assertEqual(cr.best_attack_skill(comb, [13013, 13010], 30), 10000)
 
     def test_weapon_only_for_its_owner(self):
         self.ws._CONFIG[0] = NS(PET_NAMES={45221: "Triệu Vân rb2", 12027: "Triệu Vân rb0", 45414: "Lữ Bố rb2",

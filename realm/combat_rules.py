@@ -16,6 +16,7 @@ import logging
 import threading
 
 from . import npc_danger
+from . import skill_power
 from . import status_logic as sl
 
 log = logging.getLogger("bot")
@@ -430,18 +431,22 @@ def boss_sp_restore(combat, state, unit, skills, stat):
 
 
 def best_attack_skill(combat, skills, sp):
-    """Skill gây dame (không phải khống chế) TỐN SP NHẤT mà còn đủ SP. Không có -> đánh thường."""
+    """Skill gây dame (không phải khống chế) còn đủ SP, DAME LÊN 1 MỤC TIÊU cao nhất theo wiki
+    (realm/skill_power.py: skill đánh toàn đội chỉ ăn 1/3 dame lên boss), bằng nhau thì skill tốn SP
+    hơn. Không có -> đánh thường."""
     cc = getattr(combat, "CC_SKILLS", frozenset())
     normal = getattr(combat.config, "SKILL_NORMAL", 10000)
     cand = [s for s in (skills or ()) if s != normal and s not in cc and combat._is_attack(s)
             and combat._skill_cost(s) <= sp]
     if not cand:
         return normal
-    return max(cand, key=lambda s: (combat._skill_cost(s), -list(skills).index(s)))
+    order = list(skills)
+    return max(cand, key=lambda s: (round(skill_power.single_target_score(s), 4), combat._skill_cost(s),
+                                    -order.index(s)))
 
 
 def boss_attack(combat, state, unit, skills, stat, options):
-    """Bước đánh của Boss TG: bỏ skill người dùng chọn, đánh skill atk tốn SP cao nhất đủ SP vào con
+    """Bước đánh của Boss TG: bỏ skill người dùng chọn, đánh skill dame lên 1 mục tiêu cao nhất đủ SP vào con
     ít máu nhất, né con có Kết Giới / Kim Chung Tráo. Mọi con đều phản dame -> phòng thủ (reflect_policy)."""
     cfg = combat.config
     at = state.my_atype
@@ -532,7 +537,7 @@ def install(combat, rules: dict = None):
         return None if c is getattr(combat, "_CUSTOM_AUTO", object()) else c
 
     def _boss(state, unit, skills, stat, options, tag, spam, fire_min):
-        # Boss TG: không dùng skill chọn trong app / luật riêng, AI TS Manager + đánh skill SP cao nhất
+        # Boss TG: không dùng skill chọn trong app / luật riêng, AI TS Manager + đánh skill dame 1 mục tiêu cao nhất (wiki)
         # Không dùng skill hồi máu trong trận boss (đã có hồi sinh); hồi SP chỉ khi SP < 30%.
         return tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min,
                           attack=lambda: boss_attack(combat, state, unit, skills, stat, options),
