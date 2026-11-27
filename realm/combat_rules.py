@@ -40,6 +40,11 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          "dau_chuyen_retry_gap": 2,
          # Máu party < party_hp_emergency thì hồi máu TRƯỚC cả giải Đẩu Chuyển.
          "heal_before_dau_chuyen": True,
+         # Chế độ KHÔNG dùng skill hồi máu (Trí nhân vật thấp, hồi được rất ít - user 27/11): ai chết
+         # thì hồi sinh, và hồi sinh đứng trước cả giải Đẩu Chuyển.
+         "skip_heal_modes": ["npc40", "nhi_kieu"], "revive_before_dau_chuyen": True,
+         # Unit có skill hồi sinh: đánh skill dame nhưng chừa đủ SP cho 1 lần hồi sinh.
+         "reserve_revive_sp": True,
          "npc40_ai": "ts_manager", "tsm_modes": ["npc40", "nhi_kieu", "boss"], "party_hp_emergency": 0.5, "guard_hp": 0.5,
          "guard_outnumbered_by": 2,
          # Buff theo chế độ: {"boss"|"npc40"|"nhi_kieu": {"char": {"skill": id, "target": "pet"|"char"},
@@ -335,6 +340,24 @@ def danger_target(combat, state, offered, pos):
     return pos
 
 
+def _revive_skill(combat, skills):
+    is_rev = getattr(combat, "_is_revive", None)
+    if is_rev is None:
+        return None
+    return next((s for s in (skills or ()) if is_rev(s)), None)
+
+
+def attack_sp(combat, state, skills, sp):
+    """SP được phép tiêu cho skill dame: chừa lại SP 1 lần hồi sinh (40 NPC / Nhị Kiều)."""
+    if (not RULES.get("reserve_revive_sp", True)
+            or getattr(state, "realm_mode", None) not in tuple(RULES.get("damage_modes") or ())):
+        return sp
+    rev = _revive_skill(combat, skills)
+    if rev is None:
+        return sp
+    return max(0, sp - int(combat._skill_cost(rev) or 0))
+
+
 def _party_hp_ratio(state):
     """Tỉ lệ máu các ô phe ta CÒN SỐNG (con đã chết thì hồi máu toàn party cũng không cứu được, để
     hồi sinh lo)."""
@@ -385,7 +408,16 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
             return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
     if getattr(stat, "hp_max", 0) > 0 and getattr(stat, "hp", 0) <= 0:
         return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
-    heal = (lambda: None) if "heal" in skip else (lambda: _party_heal(combat, state, unit, skills, stat, tag))
+    no_heal = "heal" in skip or getattr(state, "realm_mode", None) in tuple(RULES.get("skip_heal_modes") or ())
+    heal = (lambda: None) if no_heal else (lambda: _party_heal(combat, state, unit, skills, stat, tag))
+    revive = (lambda: combat._try_revive(state, unit, skills, stat, options))
+    if (getattr(state, "realm_mode", None) in tuple(RULES.get("skip_heal_modes") or ())
+            and RULES.get("revive_before_dau_chuyen", True)):
+        first = revive
+    elif RULES.get("heal_before_dau_chuyen", True):
+        first = heal
+    else:
+        first = (lambda: None)
     if "sp_restore" in skip:
         sp_restore = (lambda: None)
     elif getattr(state, "realm_mode", None) == "boss":
@@ -400,14 +432,14 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
                 or getattr(state, "realm_mode", None) not in tuple(RULES.get("damage_modes") or ())):
             return None
         normal = getattr(combat.config, "SKILL_NORMAL", 10000)
-        if best_attack_skill(combat, skills, getattr(stat, "sp", 0)) == normal:
+        if best_attack_skill(combat, skills, attack_sp(combat, state, skills, getattr(stat, "sp", 0))) == normal:
             return None
         return attack()
 
     steps = (
-        heal if RULES.get("heal_before_dau_chuyen", True) else (lambda: None),
+        first,
         lambda: try_top_dispel(combat, state, unit, skills, stat, options),
-        lambda: combat._try_revive(state, unit, skills, stat, options),
+        revive,
         heal,
         lambda: try_cleanse(combat, state, unit, skills, stat, options),
         damage_first,
@@ -555,6 +587,8 @@ def auto_attack(combat, state, unit, skills, stat, options, boss=False):
     if (not boss and hasattr(combat, "_has_support_skill") and combat._has_support_skill(skills or ())
             and sp <= getattr(cfg, "SUPPORT_RESERVE_SP", 100)):
         sp = 0
+    if not boss:
+        sp = attack_sp(combat, state, skills, sp)
     sk = best_attack_skill(combat, skills, sp, enemies)
     if enemies > 1 and skill_power.targets(sk) > 1 and hasattr(combat, "_train_target"):
         center = combat._train_target(es, offered)

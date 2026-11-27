@@ -83,7 +83,9 @@ def fresh_rules():
     cr._installed = False
     cr._claims.clear()
     cr.RULES.update({"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrier": True,
-                     "dau_chuyen_first": True, "boss_style": "auto", "auto_guard_hp": 0.5})
+                     "dau_chuyen_first": True, "boss_style": "auto", "auto_guard_hp": 0.5,
+                     "skip_heal_modes": ["npc40", "nhi_kieu"], "revive_before_dau_chuyen": True,
+                     "reserve_revive_sp": True})
 
 
 class StatusLogicTest(unittest.TestCase):
@@ -600,6 +602,7 @@ class TsmDecideTest(unittest.TestCase):
         return st
 
     def test_emergency_heal_before_cleanse(self):
+        cr.RULES["skip_heal_modes"] = []                   # chế độ còn dùng skill hồi máu
         chaos = next(s for s, (k, _) in sl.CC_KIND.items() if k == "chaos")
         st = self.st(skills_char=[11010, 14022], status_by_kind={(3, 2): {"c": chaos}},
                      allies={(3, 2): NS(hp=100, hp_max=1000), (3, 1): NS(hp=200, hp_max=1000)})
@@ -623,6 +626,7 @@ class TsmDecideTest(unittest.TestCase):
         self.assertEqual(self.cb.decide_char(st, []), "SHIELD")
 
     def test_dau_chuyen_first_even_before_revive(self):
+        cr.RULES["revive_before_dau_chuyen"] = False
         cb = self.cb
         cb._try_revive = lambda *a: "REVIVE"
         st = self.st(skills_char=[11012], enemy_slots=[2], status_by_kind={(0, 2): {"b": 13021}},
@@ -2347,9 +2351,32 @@ class Npc40Floor38FixTest(unittest.TestCase):
         self.assertEqual(cb.decide_char(mk(7), opts).skill, 11012)      # quá 2 lượt: thử giải lại
 
     def test_heal_before_dau_chuyen_when_party_low(self):
+        cr.RULES["skip_heal_modes"] = []
         st = self.st(skills_char=[11012, 11010], enemy_slots=[2], status_by_kind={(0, 2): {"b": 13021}},
                      allies={(3, 2): NS(hp=2460, hp_max=8601), (2, 2): NS(hp=1244, hp_max=5984)})
         self.assertEqual(self.cb.decide_char(st, [(1, 2)]).skill, 11010)
+
+    def test_npc40_no_heal_skill_revive_first(self):
+        """Trí thấp, hồi máu được ít (user 27/11): 40 NPC không dùng Toàn Trị Liệu, ai chết thì hồi sinh
+        trước cả giải Đẩu Chuyển."""
+        cb = self.cb
+        cb._try_revive = lambda *a: "REVIVE"
+        low = {(3, 2): NS(hp=500, hp_max=8601), (2, 2): NS(hp=300, hp_max=5984)}
+        st = self.st(skills_char=[11012, 11010], enemy_slots=[2], status_by_kind={(0, 2): {"b": 13021}},
+                     allies=low)
+        self.assertEqual(cb.decide_char(st, [(1, 2)]), "REVIVE")
+        cb._try_revive = lambda *a: None
+        st = self.st(skills_char=[11010], enemy_slots=[2], allies=low, char=NS(sp=600, hp=500, hp_max=8601))
+        self.assertNotEqual(getattr(cb.decide_char(st, [(1, 2)]), "skill", None), 11010)
+
+    def test_attack_keeps_sp_for_revive(self):
+        cb = self.cb
+        cb._is_revive = lambda s: s == 11013
+        cb._skill_cost = lambda s: {11013: 250, 13010: 100}.get(s, 10)
+        st = self.st(skills_char=[13010, 11013])
+        self.assertEqual(cr.attack_sp(cb, st, st.skills_char, 300), 50)
+        self.assertEqual(cr.best_attack_skill(cb, st.skills_char, cr.attack_sp(cb, st, st.skills_char, 300)), 10000)
+        self.assertEqual(cr.best_attack_skill(cb, st.skills_char, cr.attack_sp(cb, st, st.skills_char, 400)), 13010)
 
     def test_party_ratio_ignores_dead(self):
         st = fake_state(allies={(3, 2): NS(hp=900, hp_max=1000), (2, 0): NS(hp=0, hp_max=5000)})
