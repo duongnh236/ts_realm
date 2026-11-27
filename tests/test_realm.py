@@ -1290,7 +1290,7 @@ class AndroidApiTest(unittest.TestCase):
         api._SESSIONS.clear()
         fake_tb = types.ModuleType("train_bot")
         fake_tb.config = NS(SERVERS={"trieu_van": {}, "tu_long": {}})
-        self.ran = []
+        self.ran, self.parties = [], []
         test = self
 
         class FakeCli:
@@ -1310,11 +1310,17 @@ class AndroidApiTest(unittest.TestCase):
             return FakeCli("NV_" + acc["username"])
 
         class FakeRunner:
-            def __init__(self, client, cfg, settings, stop_event):
-                self.c, self.s = client, settings
+            def __init__(self, client, cfg, settings, stop_event, party=None):
+                self.c, self.s, self.party = client, settings, party
 
             def run(self, names):
                 logging.getLogger("bot").info("[%s] chạy %s", self.c._label, names[0])
+                if self.party is not None:
+                    role = self.party["role"]
+                    if role == "member":
+                        self.party["done"].wait(2)
+                    test.parties.append((self.c.char_name, names[0], role,
+                                         self.s.get("max_losses", {}).get("npc40")))
                 test.ran.append((self.c.char_name, names[0], self.s["world_boss"]["damage_goal"]))
 
         self.patches = [mock.patch.dict(sys.modules, {"train_bot": fake_tb, "train_bot.config": fake_tb.config}),
@@ -1344,6 +1350,21 @@ class AndroidApiTest(unittest.TestCase):
                 return st
             time.sleep(0.02)
         self.fail("tab %s không tới %s" % (tab, states))
+
+    def test_run_party(self):
+        api, j = self.api, self.json
+        for t in ("1", "2"):
+            api.login(t, "acc" + t, "pw", "trieu_van")
+            self.wait(t, ("online",))
+        self.assertFalse(j.loads(api.run_party("1", '["2"]', '["world_boss"]'))["ok"])   # chỉ 40 NPC / Nhị Kiều
+        self.assertTrue(j.loads(api.party_status())["tabs"][0]["char"].startswith("NV_"))
+        opts = {"max_losses": {"npc40": 3}, "_tabs": {"2": {"max_losses": {"npc40": 7}}}}
+        r = j.loads(api.run_party("1", '["2"]', '["npc40","world_boss"]', j.dumps(opts)))
+        self.assertTrue(r["ok"], r)
+        self.wait("2", ("online",))
+        self.wait("1", ("online",))
+        time.sleep(0.05)
+        self.assertEqual(sorted(self.parties), [("NV_acc1", "npc40", "leader", 3), ("NV_acc2", "npc40", "member", 7)])
 
     def test_cancel_login(self):
         api, j = self.api, self.json
@@ -2081,3 +2102,64 @@ class DamageAttackTest(unittest.TestCase):
 def json_copy(d):
     import json
     return json.loads(json.dumps(d))
+
+
+class PartyTest(unittest.TestCase):
+    """realm/party.py: đội trưởng mời các tab, thành viên tự nhận (giả lập server)."""
+
+    def setUp(self):
+        from realm import party
+        self.party = party
+        self.reg = {}
+        fake_cm = NS(_register_party_entity=lambda i, e: self.reg.setdefault(i, set()).add(e),
+                     _register_party_client=lambda i, e, c: None)
+        self.cfg = NS(PARTY_LEADERS_BY_IDX={})
+        self._old = party._cm, party._cfg
+        party._cm, party._cfg = (lambda: fake_cm), (lambda: self.cfg)
+
+    def tearDown(self):
+        self.party._cm, self.party._cfg = self._old
+
+    def _client(self, name, ent, mp=12001):
+        c = NS(char_name=name, self_entity=ent, running=True, current_map=mp, party_members=[],
+               party_leader=None, auto_accept_party=False, party_invite_ready=False, invites=[])
+        return c
+
+    def test_form_invites_same_map_only(self):
+        lead = self._client("A", b"A" * 8)
+        b, far = self._client("B", b"B" * 8), self._client("C", b"C" * 8, mp=99)
+
+        def invite(ent):                       # server: người được mời đã sẵn sàng thì vào đội ngay
+            m = {b"B" * 8: b, b"C" * 8: far}[bytes(ent)]
+            lead.invites.append(m.char_name)
+            if m.party_invite_ready:
+                lead.party_members.append(bytes(ent))
+                m.party_leader = lead.self_entity
+        lead.invite_entity = invite
+        joined, left = self.party.form(lead, [b, far], timeout=1.5, gap=0.1)
+        self.assertEqual((joined, left), (["B"], ["C"]))
+        self.assertEqual(lead.invites, ["B"])              # khác map: không mời
+        self.assertEqual(self.cfg.PARTY_LEADERS_BY_IDX[self.party.PIDX], ["A"])
+        self.assertTrue(b.party_invite_ready and b.party_idx == self.party.PIDX)
+
+    def test_member_follow_until_leader_done(self):
+        from realm import features
+        lead = self._client("A", b"A" * 8)
+        m = self._client("B", b"B" * 8)
+        m.party_leader = lead.self_entity
+        m.state = NS(support_combat=False, quest_mode=False, realm_mode=None)
+        done = threading.Event()
+        r = features.Runner(m, NS(), {}, threading.Event(), party={"role": "member", "leader": lead, "done": done})
+        r._loadout_on = lambda mode: False
+        r._loadout_off = lambda mode, sw: None
+        seen = {}
+
+        def finish():
+            time.sleep(0.3)
+            seen["mode"], seen["support"] = m.state.realm_mode, m.state.support_combat
+            done.set()
+        threading.Thread(target=finish).start()
+        self.assertTrue(r._follow("npc40", quest=True))
+        self.assertEqual(seen, {"mode": "npc40", "support": True})
+        self.assertIsNone(m.state.realm_mode)
+        self.assertFalse(m.state.support_combat)

@@ -35,7 +35,11 @@ import java.util.Locale;
 
 /** Một tab = một tài khoản: khung đăng nhập, chọn hoạt động, nút Chạy/Dừng và bảng trạng thái trận. */
 class AccountPanel extends ScrollView {
-    interface Listener { void onStateChanged(AccountPanel p); }
+    interface Listener {
+        void onStateChanged(AccountPanel p);
+        /** Tuỳ chọn chạy (đội hình, boss...) của tab khác, để thành viên party dùng đội hình của chính nó. */
+        JSONObject optsOf(String tab);
+    }
 
     final String tab;
     private final SharedPreferences prefs;
@@ -45,7 +49,7 @@ class AccountPanel extends ScrollView {
     private Spinner server;
     private LoadoutBox loWb, loNpc, loNk;
     private CheckBox remember, rememberPw, cWb, cWbTickets, cWbBuy, cNpc, cNk, cPbDon, cPbDoi;
-    private Button btnLogin, btnRun, btnStop;
+    private Button btnLogin, btnRun, btnStop, btnParty;
     private TextView stateLine, charLine;
     private TextView wbLine, npcLine, fightLine, charRow, petRow, bossRow, recentView;
     private LinearLayout loginCard, actCard, cbCard;
@@ -176,6 +180,11 @@ class AccountPanel extends ScrollView {
         ar.addView(btnRun);
         ar.addView(btnStop);
         actCard.addView(ar);
+        btnParty = Ui.button(c, "👥  Chạy party (tab này làm đội trưởng)", Ui.ACCENT);
+        btnParty.setOnClickListener(v -> onPartyClick());
+        actCard.addView(btnParty);
+        actCard.addView(Ui.text(c, "Party: chỉ 40 NPC / Nhị Kiều. Đội trưởng mở trận, các tab chọn làm "
+                + "thành viên tự vào đội và đánh theo. Mọi tab phải đăng nhập, đứng rảnh.", 12, Ui.DIM));
         root.addView(actCard);
 
         // hợp vật phẩm
@@ -565,17 +574,28 @@ class AccountPanel extends ScrollView {
     }
 
     private void onRunClick() {
-        JSONArray feats = new JSONArray();
-        if (cWb.isChecked()) feats.put("world_boss");
-        if (cNk.isChecked()) feats.put("nhi_kieu");
-        if (cNpc.isChecked()) feats.put("npc40");
-        if (cPbDon.isChecked()) feats.put("pb_don");
-        if (cPbDoi.isChecked()) feats.put("pb_doi");
+        JSONArray feats = buildFeats(false);
         if (feats.length() == 0) {
             toast("Chọn ít nhất một hoạt động");
             return;
         }
         saveChoices();
+        Py.call(r -> { if (!r.optBoolean("ok")) toast(r.optString("error")); poll(); },
+                "run", tab, feats.toString(), buildOpts().toString());
+    }
+
+    private JSONArray buildFeats(boolean partyOnly) {
+        JSONArray feats = new JSONArray();
+        if (cWb.isChecked() && !partyOnly) feats.put("world_boss");
+        if (cNk.isChecked()) feats.put("nhi_kieu");
+        if (cNpc.isChecked()) feats.put("npc40");
+        if (cPbDon.isChecked() && !partyOnly) feats.put("pb_don");
+        if (cPbDoi.isChecked() && !partyOnly) feats.put("pb_doi");
+        return feats;
+    }
+
+    /** Tuỳ chọn chạy của tab này (đội hình 40 NPC / Nhị Kiều, boss, phó bản). */
+    JSONObject buildOpts() {
         JSONObject opts = new JSONObject();
         try {
             opts.put("world_boss", loWb.put(new JSONObject())
@@ -588,8 +608,65 @@ class AccountPanel extends ScrollView {
             opts.put("max_losses", new JSONObject().put("npc40", Math.max(0, num(npcLosses, 0))).put("nhi_kieu", 0));
             opts.put("team_dungeon_level", num(pbLevel, 50));
         } catch (Exception ignored) {}
+        return opts;
+    }
+
+    private void onPartyClick() {
+        JSONArray feats = buildFeats(true);
+        if (feats.length() == 0) {
+            toast("Tick 40 NPC hoặc Nhị Kiều trước");
+            return;
+        }
+        if (!"online".equals(state)) {
+            toast("Tab này chưa đăng nhập hoặc đang chạy");
+            return;
+        }
+        saveChoices();
+        Py.call(r -> {
+            JSONArray all = r.optJSONArray("tabs");
+            List<String> ids = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            for (int i = 0; all != null && i < all.length(); i++) {
+                JSONObject t = all.optJSONObject(i);
+                if (t == null || tab.equals(t.optString("tab")) || t.optBoolean("busy")) continue;
+                ids.add(t.optString("tab"));
+                String nm = t.isNull("char") ? t.optString("user") : t.optString("char");
+                names.add(nm + "  (map " + t.optString("map") + ")");
+            }
+            if (ids.isEmpty()) {
+                toast("Không có tab nào khác đang đăng nhập và rảnh");
+                return;
+            }
+            boolean[] pick = new boolean[ids.size()];
+            java.util.Arrays.fill(pick, true);
+            new android.app.AlertDialog.Builder(getContext())
+                    .setTitle("Chọn thành viên party")
+                    .setMultiChoiceItems(names.toArray(new String[0]), pick, (d, w, on) -> pick[w] = on)
+                    .setPositiveButton("Chạy", (d, w) -> startParty(feats, ids, pick))
+                    .setNegativeButton("Huỷ", null)
+                    .show();
+        }, "party_status");
+    }
+
+    private void startParty(JSONArray feats, List<String> ids, boolean[] pick) {
+        JSONArray mem = new JSONArray();
+        JSONObject opts = buildOpts();
+        JSONObject per = new JSONObject();
+        try {
+            for (int i = 0; i < ids.size(); i++) {
+                if (!pick[i]) continue;
+                mem.put(ids.get(i));
+                JSONObject o = listener.optsOf(ids.get(i));
+                if (o != null) per.put(ids.get(i), o);
+            }
+            opts.put("_tabs", per);
+        } catch (Exception ignored) {}
+        if (mem.length() == 0) {
+            toast("Chưa chọn thành viên");
+            return;
+        }
         Py.call(r -> { if (!r.optBoolean("ok")) toast(r.optString("error")); poll(); },
-                "run", tab, feats.toString(), opts.toString());
+                "run_party", tab, mem.toString(), feats.toString(), opts.toString());
     }
 
     private static long num(EditText e, long def) {
@@ -833,6 +910,8 @@ class AccountPanel extends ScrollView {
         for (View v : new View[]{user, pass, server, remember, rememberPw}) v.setEnabled(!in && !busy);
         btnRun.setEnabled("online".equals(state));
         btnRun.setAlpha("online".equals(state) ? 1f : 0.4f);
+        btnParty.setEnabled("online".equals(state));
+        btnParty.setAlpha("online".equals(state) ? 1f : 0.4f);
         btnStop.setEnabled("running".equals(state));
         btnStop.setAlpha("running".equals(state) ? 1f : 0.4f);
         actCard.setAlpha(in ? 1f : 0.6f);

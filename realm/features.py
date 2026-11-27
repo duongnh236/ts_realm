@@ -42,11 +42,14 @@ def in_window(win, now=None) -> bool:
 
 
 class Runner:
-    def __init__(self, client, config_mod, settings: dict, stop_event: threading.Event):
+    def __init__(self, client, config_mod, settings: dict, stop_event: threading.Event, party=None):
         self.c = client
         self.config = config_mod
         self.s = settings
         self.stop = stop_event
+        # Party giữa các tab (realm/party.py): {"role": "leader", "members": [client...]} hoặc
+        # {"role": "member", "leader": client, "done": Event (đội trưởng chạy xong)}. None = đi một mình.
+        self.party = party
 
     # ---- tiện ích ----
     def window(self, name):
@@ -175,6 +178,9 @@ class Runner:
         if not self.c.go_to_event(ev):
             log.warning("40 NPC: không vào được sân")
             return False
+        if self._party_role() == "member":
+            return self._follow("npc40", quest=True)
+        self._form_party("40 NPC")
         from . import npc40_loop, npc40_progress
         max_consec = int((self.s.get("max_losses") or {}).get("npc40", 0) or 0)
         self.c._npc40_summary = None
@@ -212,6 +218,9 @@ class Runner:
         if not self.c.go_to_event(ev):
             log.warning("Nhị Kiều: không vào được tháp")
             return False
+        if self._party_role() == "member":
+            return self._follow("nhi_kieu")
+        self._form_party("Nhị Kiều")
         max_losses = int((self.s.get("max_losses") or {}).get("nhi_kieu", 0) or 0)
         losses = {"n": 0, "last": False}
         done = threading.Event()
@@ -253,6 +262,58 @@ class Runner:
             self.c.stop_floor_crawl()
             self.c.state.realm_mode = None
             self._loadout_off("nhi_kieu", pet_switched)
+            self._support(False)
+        return True
+
+    # ---- party ----
+    def _party_role(self):
+        return (self.party or {}).get("role")
+
+    def _form_party(self, what):
+        """Đội trưởng: mời các tab thành viên (đã tới cùng map) vào đội trước khi mở trận."""
+        if self._party_role() != "leader":
+            return
+        from . import party
+        members = [m for m in (self.party.get("members") or ()) if getattr(m, "running", False)]
+        if not members:
+            return
+        joined, left = party.form(self.c, members, timeout=float(self.party.get("timeout", 60)),
+                                  stop=self.stop)
+        log.info("%s: party %d/%d người vào đội%s", what, len(joined) + 1, len(members) + 1,
+                 (" — chưa vào: %s" % ", ".join(left)) if left else "")
+
+    def _follow(self, mode, quest=False):
+        """Thành viên party: không tự mở trận, đi theo đội trưởng và đánh bằng AI của ``mode``
+        (ưu tiên con nguy hiểm, chọn skill theo dame) cho tới khi đội trưởng chạy xong."""
+        from . import party
+        leader, done = self.party.get("leader"), self.party.get("done")
+        log.info("%s: là thành viên party của %s -> đi theo, đánh hỗ trợ", mode, party._label(leader))
+        self._support(True)
+        self.c.state.quest_mode = bool(quest) or getattr(self.c.state, "quest_mode", False)
+        self.c.state.realm_mode = mode
+        pet_switched = self._loadout_on(mode)
+        out_since = None
+        try:
+            while not self.stop.is_set() and self.c.running:
+                if done is not None and done.is_set():
+                    log.info("%s: đội trưởng đã xong -> thành viên dừng", mode)
+                    break
+                if leader is not None and not getattr(leader, "running", False):
+                    log.info("%s: đội trưởng mất kết nối -> thành viên dừng", mode)
+                    break
+                if leader is not None and not party.in_party_with(leader, self.c):
+                    out_since = out_since or time.time()
+                    if time.time() - out_since > float(self.party.get("out_grace", 180)):
+                        log.info("%s: ngoài đội quá lâu -> thành viên dừng", mode)
+                        break
+                else:
+                    out_since = None
+                time.sleep(2)
+        finally:
+            if quest:
+                self.c.state.quest_mode = False
+            self.c.state.realm_mode = None
+            self._loadout_off(mode, pet_switched)
             self._support(False)
         return True
 

@@ -4,6 +4,8 @@ Java gọi các hàm cấp module, mọi giá trị trả về là chuỗi JSON 
     init(runtime_dir)                 -> {"ok": true, "servers": [...]}
     login(tab, user, pw, server)      -> {"ok": true}  (chạy nền; xem status)
     run(tab, features_json, opts_json)-> {"ok": true}  features: ["world_boss","npc40","nhi_kieu",...]
+    run_party(leader_tab, member_tabs_json, features_json, opts_json) -> 40 NPC / Nhị Kiều theo party
+    party_status()                    -> {"ok": true, "tabs": [{tab, user, char, map, busy, leader, members}]}
     stop(tab) / logout(tab)
     status(tab)                       -> {"state": ..., "char": ..., "map": ..., "task": ...}
     logs(tab, since)                  -> {"next": n, "lines": [...]}
@@ -189,7 +191,7 @@ class Session:
         return {"ok": True}
 
     # ---- chạy hoạt động ----
-    def run(self, features, opts):
+    def run(self, features, opts, party=None, on_end=None):
         if self.client is None or not self.client.running:
             return {"ok": False, "error": "chưa đăng nhập"}
         if self.worker is not None and self.worker.is_alive():
@@ -210,7 +212,7 @@ class Session:
             from .features import Runner
             self.state = "running"
             try:
-                r = Runner(self.client, config, settings, self.stop_event)
+                r = Runner(self.client, config, settings, self.stop_event, party=party)
                 for name in features:
                     if self.stop_event.is_set():
                         break
@@ -222,6 +224,8 @@ class Session:
                 self.task = ""
                 self.state = "online" if (self.client is not None and self.client.running) else "offline"
                 self.say("Xong lượt chạy")
+                if on_end is not None:
+                    on_end()
 
         self.worker = threading.Thread(target=work, daemon=True, name=self.thread_prefix + "-run")
         self.worker.start()
@@ -386,6 +390,59 @@ def close_tab(tab):
 
 def run(tab, features_json, opts_json="{}"):
     return _json(_session(tab).run(json.loads(features_json), json.loads(opts_json or "{}")))
+
+
+PARTY_FEATURES = ("npc40", "nhi_kieu")
+
+
+def run_party(leader_tab, member_tabs_json, features_json, opts_json="{}"):
+    """Chạy 40 NPC / Nhị Kiều theo party: tab ``leader_tab`` làm đội trưởng (mở trận), các tab trong
+    ``member_tabs_json`` (JSON list) đi theo. Mọi tab phải đang đăng nhập và rảnh."""
+    features = [f for f in json.loads(features_json or "[]") if f in PARTY_FEATURES]
+    opts = json.loads(opts_json or "{}")
+    per_tab = opts.pop("_tabs", None) or {}       # đội hình riêng của từng tab thành viên
+    if not features:
+        return _json({"ok": False, "error": "party chỉ chạy 40 NPC / Nhị Kiều"})
+    lead = _session(leader_tab)
+    mems = [_session(t) for t in json.loads(member_tabs_json or "[]") if str(t) != str(leader_tab)]
+    for s in [lead] + mems:
+        if s.client is None or not s.client.running:
+            return _json({"ok": False, "error": "tab %s chưa đăng nhập" % s.tab})
+        if s.worker is not None and s.worker.is_alive():
+            return _json({"ok": False, "error": "tab %s đang chạy %s" % (s.tab, s.task)})
+    if not mems:
+        return _json({"ok": False, "error": "chưa chọn thành viên"})
+    done = threading.Event()
+    member_clients = [s.client for s in mems]
+    for s in mems:
+        r = s.run(features, per_tab.get(s.tab) or opts,
+                  party={"role": "member", "leader": lead.client, "done": done})
+        if not r.get("ok"):
+            done.set()
+            return _json(r)
+    r = lead.run(features, opts, party={"role": "leader", "members": member_clients}, on_end=done.set)
+    if not r.get("ok"):
+        done.set()
+    else:
+        lead.say("Party: đội trưởng, %d thành viên (%s)" % (len(mems), ", ".join(s.label for s in mems)))
+    return _json(r)
+
+
+def party_status():
+    """Danh sách tab đang đăng nhập (để app chọn đội trưởng / thành viên) và đội hiện tại."""
+    from . import party
+    with _LOCK:
+        items = list(_SESSIONS.items())
+    out = []
+    for tab, s in items:
+        c = s.client
+        if c is None or not getattr(c, "running", False):
+            continue
+        out.append({"tab": tab, "user": s.label, "char": getattr(c, "char_name", None),
+                    "map": getattr(c, "current_map", None), "busy": bool(s.worker and s.worker.is_alive()),
+                    "leader": party._label_entity(c, getattr(c, "party_leader", None)),
+                    "members": len(getattr(c, "party_members", None) or [])})
+    return _json({"ok": True, "tabs": out})
 
 
 def stop(tab):

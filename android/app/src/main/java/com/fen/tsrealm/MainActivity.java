@@ -285,6 +285,12 @@ public class MainActivity extends Activity implements AccountPanel.Listener {
     }
 
     @Override
+    public org.json.JSONObject optsOf(String tab) {
+        AccountPanel p = panels.get(tab);
+        return p == null ? null : p.buildOpts();
+    }
+
+    @Override
     public void onStateChanged(AccountPanel p) {
         paintChip(p.tab);
         updateService();
