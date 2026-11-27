@@ -2246,6 +2246,64 @@ class PartyPetsTest(unittest.TestCase):
         self.assertEqual([(d.unit, d.atype, d.b, d.target, d.skill) for d in sent], [(2, 0, 0, 3, 13013)])   # 2 con: Loạn kích (3 mục tiêu) tổng dame cao hơn
 
 
+class PartyPetRoleTest(unittest.TestCase):
+    """Vai trò võ tướng phụ: giải -> khống chế -> đánh (theo skill nó có)."""
+
+    def setUp(self):
+        from realm import party_pets
+        self.pp = party_pets
+        cr._claims.clear()
+        self.comb = fake_combat()
+        self.comb._skill_cost = lambda s: 20
+        self.comb._is_attack = lambda s: s in (13010, 13013)
+        self.comb.CC_SKILLS = frozenset((14021,))
+        self.comb.config.SKILL_NORMAL = 10000
+
+    def client(self, skills, sbk=None, hp=None):
+        st = fake_state(status_by_kind=sbk or {}, enemy_hp=hp or {2: 900, 3: 100}, label="a", party_idx=None)
+        return NS(state=st, pet_usable_skills=lambda pid: skills)
+
+    def unit(self):
+        return NS(role_id=b"\x01\x02" + b"\0" * 6, sp=500)
+
+    def test_cleanse_first(self):
+        chaos = 14021
+        c = self.client([14022, 14021, 13010], sbk={(3, 1): {"c": chaos}})
+        d = self.pp.decide(c, self.comb, 2, 0, self.unit())
+        self.assertEqual((d.skill, d.b, d.target), (14022, 3, 1))
+
+    def test_cc_then_damage(self):
+        c = self.client([14021, 13010])
+        d = self.pp.decide(c, self.comb, 2, 0, self.unit())
+        self.assertEqual((d.skill, d.b, d.target), (14021, 0, 2))            # khống chế con nhiều máu
+        d2 = self.pp.decide(c, self.comb, 2, 4, self.unit())                 # con kia đã giữ chỗ
+        self.assertEqual(d2.skill, 14021)
+        self.assertEqual((d2.b, d2.target), (0, 3))
+        c1 = self.client([14021, 13010], hp={2: 900})
+        self.assertEqual(self.pp.decide(c1, self.comb, 2, 0, self.unit()).skill, 13010)   # còn 1 con: đánh
+
+    def test_skill_pref_overrides_roles(self):
+        c = self.client([14021, 13010, 13013])
+        self.assertEqual(self.pp.decide(c, self.comb, 2, 0, self.unit(), skill_pref=13013).skill, 13013)
+
+
 def mock_module(name, obj):
     from unittest import mock
     return mock.patch.dict(sys.modules, {name: obj})
+
+
+class PetSkillPrefTest(unittest.TestCase):
+    def test_default_pet_skill_used_when_mode_has_none(self):
+        from unittest import mock
+        seen = {}
+        c = NS(state=NS(active_pet_id=0xb170))
+        r = features.Runner(c, NS(), {"loadouts": {"npc40": {"pet_skill": 0}}, "pet_skills": {0xb170: 13010}},
+                            threading.Event())
+        with mock.patch("realm.loadout.apply", lambda cl, opts, rules_mod=None, mode=None: seen.update(opts)):
+            r._loadout_on("npc40")
+        self.assertEqual(seen.get("pet_skill"), 13010)
+        seen.clear()
+        r.s["loadouts"]["npc40"]["pet_skill"] = 13013                  # chế độ đã chọn: giữ
+        with mock.patch("realm.loadout.apply", lambda cl, opts, rules_mod=None, mode=None: seen.update(opts)):
+            r._loadout_on("npc40")
+        self.assertEqual(seen.get("pet_skill"), 13013)

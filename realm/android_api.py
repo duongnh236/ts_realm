@@ -211,6 +211,16 @@ class Session:
             settings["loadouts"] = dict(opts["loadouts"])
         if "team_dungeon_level" in opts:
             settings["team_dungeon_level"] = int(opts["team_dungeon_level"])
+        if isinstance(opts.get("pet_skills"), dict):     # skill mặc định từng võ tướng (app)
+            prefs = {}
+            for k, v in opts["pet_skills"].items():
+                try:
+                    if int(v):
+                        prefs[int(k)] = int(v)
+                except (TypeError, ValueError):
+                    pass
+            settings["pet_skills"] = prefs
+            self.client._realm_pet_skill_pref = prefs
         self.wb_settings = dict(settings.get("world_boss") or {})
         self.stop_event = threading.Event()
 

@@ -83,6 +83,12 @@ class Runner:
         from . import combat_rules, loadout
         if self.party and opts.get("party_pets"):
             self._arrange_party_pets(mode, opts.get("party_pets"))
+        prefs = self.s.get("pet_skills") or {}
+        if not int(opts.get("pet_skill") or 0) and prefs:
+            # chưa chọn skill đánh của pet cho chế độ này -> skill mặc định của võ tướng ra trận
+            owner = int(opts.get("pet_id") or 0) or int(getattr(self.c.state, "active_pet_id", 0) or 0)
+            if prefs.get(owner):
+                opts["pet_skill"] = prefs[owner]
         try:
             loadout.apply(self.c, opts, rules_mod=combat_rules, mode=mode)
         except Exception as exc:

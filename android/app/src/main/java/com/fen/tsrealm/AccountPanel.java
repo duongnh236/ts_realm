@@ -51,6 +51,10 @@ class AccountPanel extends ScrollView {
     private CheckBox remember, rememberPw, cWb, cWbTickets, cWbBuy, cNpc, cNk, cPbDon, cPbDoi;
     private Button btnLogin, btnRun, btnStop, btnParty;
     private TextView stateLine, charLine, partyLine, noteLine;
+    /** Skill mặc định từng võ tướng: mã võ tướng -> ô chọn skill. */
+    private LinearLayout petSkBox;
+    private final java.util.LinkedHashMap<Long, Spinner> petSk = new java.util.LinkedHashMap<>();
+    private String petSkSig = "";
     private TextView wbLine, npcLine, fightLine, charRow, petRow, bossRow, recentView;
     private LinearLayout loginCard, actCard, cbCard;
     private Spinner cbItem;
@@ -192,6 +196,17 @@ class AccountPanel extends ScrollView {
         actCard.addView(Ui.text(c, "Party: chỉ 40 NPC / Nhị Kiều. Đội trưởng mở trận, các tab chọn làm "
                 + "thành viên tự vào đội và đánh theo. Mọi tab phải đăng nhập, đứng rảnh.", 12, Ui.DIM));
         root.addView(actCard);
+
+        // skill mặc định từng võ tướng
+        LinearLayout psCard = Ui.card(c, "Skill mặc định từng võ tướng");
+        psCard.addView(Ui.text(c, "Võ tướng dùng skill này khi đánh (đủ SP), cho cả pet ra trận lẫn võ tướng phụ khi đi "
+                + "party. 'Tự động': con có skill giải thì đi giải khi đồng đội dính khống chế, con có skill "
+                + "khống chế thì khống chế con nguy hiểm, còn lại đánh skill dame cao nhất.", 12, Ui.DIM));
+        petSkBox = new LinearLayout(c);
+        petSkBox.setOrientation(LinearLayout.VERTICAL);
+        petSkBox.addView(Ui.text(c, "Đăng nhập để thấy danh sách võ tướng", 12, Ui.DIM));
+        psCard.addView(petSkBox);
+        root.addView(psCard);
 
         // hợp vật phẩm
         cbCard = Ui.card(c, "Hợp vật phẩm");
@@ -557,6 +572,50 @@ class AccountPanel extends ScrollView {
         cbKeepLv.setText(prefs.getString("cb_keep_lv", "0"));
     }
 
+    private void applyPetSkills(JSONObject lo) {
+        if (lo == null) return;
+        JSONArray pets = lo.optJSONArray("pets");
+        if (pets == null || pets.length() == 0) return;
+        String sig = pets.toString();
+        if (sig.equals(petSkSig)) return;
+        petSkSig = sig;
+        Context c = getContext();
+        java.util.Map<Long, Long> keep = petSkillChoices();
+        petSkBox.removeAllViews();
+        petSk.clear();
+        for (int i = 0; i < pets.length(); i++) {
+            JSONObject p = pets.optJSONObject(i);
+            if (p == null) continue;
+            long pid = p.optLong("id");
+            JSONArray sk = p.optJSONArray("skills");
+            List<Long> ids = new ArrayList<>();
+            List<String> labels = new ArrayList<>();
+            ids.add(0L);
+            labels.add("Tự động");
+            if (sk != null) for (int j = 0; j < sk.length(); j++) {
+                JSONObject k = sk.optJSONObject(j);
+                if (k == null || k.optInt("cat") == 0) continue;
+                ids.add(k.optLong("id"));
+                labels.add(k.optString("name") + "  (" + k.optInt("cost") + " SP)");
+            }
+            long[] a = new long[ids.size()];
+            for (int j = 0; j < a.length; j++) a[j] = ids.get(j);
+            Spinner sp = spinner(c);
+            Long sel = keep.get(pid);
+            setItems(sp, a, labels.toArray(new String[0]), sel != null ? sel : prefs.getLong("petsk_" + pid, 0));
+            petSkBox.addView(label(c, p.optString("name")));
+            petSkBox.addView(sp, spLp(c));
+            petSk.put(pid, sp);
+        }
+    }
+
+    /** Lựa chọn hiện tại (chưa có ô thì lấy lần lưu trước). */
+    private java.util.Map<Long, Long> petSkillChoices() {
+        java.util.Map<Long, Long> out = new java.util.HashMap<>();
+        for (java.util.Map.Entry<Long, Spinner> e : petSk.entrySet()) out.put(e.getKey(), selectedId(e.getValue()));
+        return out;
+    }
+
     private void saveChoices() {
         SharedPreferences.Editor e = prefs.edit()
                 .putBoolean("wb", cWb.isChecked()).putBoolean("wb_tickets", cWbTickets.isChecked())
@@ -569,6 +628,8 @@ class AccountPanel extends ScrollView {
         loWb.save(e);
         loNpc.save(e);
         loNk.save(e);
+        for (java.util.Map.Entry<Long, Long> ps : petSkillChoices().entrySet())
+            e.putLong("petsk_" + ps.getKey(), ps.getValue());
         e.apply();
     }
 
@@ -635,6 +696,10 @@ class AccountPanel extends ScrollView {
                     .put("nhi_kieu", loNk.put(new JSONObject())));
             opts.put("max_losses", new JSONObject().put("npc40", Math.max(0, num(npcLosses, 0))).put("nhi_kieu", 0));
             opts.put("team_dungeon_level", num(pbLevel, 50));
+            JSONObject ps = new JSONObject();
+            for (java.util.Map.Entry<Long, Long> e : petSkillChoices().entrySet())
+                if (e.getValue() != 0) ps.put(String.valueOf(e.getKey()), e.getValue());
+            opts.put("pet_skills", ps);
         } catch (Exception ignored) {}
         return opts;
     }
@@ -761,6 +826,7 @@ class AccountPanel extends ScrollView {
         applyCombine(s.optJSONObject("combine"));
         JSONObject lo = s.optJSONObject("loadout");
         for (LoadoutBox b : new LoadoutBox[]{loWb, loNpc, loNk}) b.apply(lo);
+        applyPetSkills(lo);
         if (changed) {
             refreshButtons();
             if (listener != null) listener.onStateChanged(this);

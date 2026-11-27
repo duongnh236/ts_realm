@@ -58,9 +58,70 @@ def _skills(client, pid):
         return []
 
 
+HARD_CC = ("chaos", "freeze", "lock", "sleep")
+
+
+def _claim(client, combat, kind, pos, row, col):
+    """Giữ chỗ dùng chung với nhân vật / pet (combat_rules._claims) để 2 ô không cùng giải / khống
+    chế 1 mục tiêu trong 1 lượt."""
+    from . import combat_rules as cr
+    st = client.state
+    owner = "%s:x%d%d:%s" % (getattr(st, "label", ""), row, col, kind)
+    try:
+        return combat._claim_target(st, kind, pos, owner, cr._claims, cr._lock, cr._group(st))
+    except Exception:
+        return True
+
+
+def _try_cleanse(client, combat, row, col, skills, sp):
+    from . import status_logic as sl
+    st = client.state
+    victims = sl.ally_cc(getattr(st, "status_by_kind", None) or {}, getattr(st, "ally_rows", (2, 3)))
+    if not victims:
+        return None
+    pick = sl.pick_cleanse(skills, sp, combat._skill_cost, victims,
+                           priority_rows=(getattr(st, "char_row", 3),))
+    if pick is None:
+        return None
+    skill, (vr, vc) = pick
+    if not _claim(client, combat, "cleanse", (vr, vc), row, col):
+        return None
+    return combat.Decision(row, col, vc, skill, b=vr)
+
+
+def _try_cc(client, combat, row, col, skills, sp, enemy):
+    """Khống chế cứng (hỗn loạn / đóng băng / trói / ngủ) lên con nguy hiểm nhất chưa bị khống chế.
+    Không khống chế con cuối cùng, không đụng con có Linh Kính (phản khống chế)."""
+    from . import npc_danger, status_logic as sl
+    st = client.state
+    if len(enemy) < 2:
+        return None
+    cc = [s for s in skills if sl.cc_kind(s) in HARD_CC and combat._skill_cost(s) <= sp]
+    if not cc:
+        return None
+    sbk = getattr(st, "status_by_kind", None) or {}
+    hp = getattr(st, "enemy_hp", None) or {}
+    cand = []
+    for p in enemy:
+        pos = (p // 10, p % 10)
+        if sl.is_hard_locked(sbk, pos):
+            continue
+        if any(x in npc_danger.REFLECT_CC for x in sl._statuses(sbk, pos)):
+            continue
+        cand.append((-npc_danger.danger_of(st, p), -hp.get(p, 0), p))
+    for _d, _h, p in sorted(cand):
+        if _claim(client, combat, "cc", (p // 10, p % 10), row, col):
+            sk = max(cc, key=lambda s: (sl.CC_KIND.get(s, ("", ""))[0] == "chaos", combat._skill_cost(s)))
+            return combat.Decision(row, col, p % 10, sk, b=p // 10)
+    return None
+
+
 def decide(client, combat, row, col, unit, skill_pref=None):
-    """Lệnh đánh cho 1 võ tướng phụ: skill người dùng đặt cho con này (nếu đủ SP), không thì skill
-    dame cao nhất theo wiki; mục tiêu là con nguy hiểm / ít máu (cùng luật với nhân vật)."""
+    """Lệnh cho 1 võ tướng phụ theo vai trò suy từ skill của nó:
+      1. có skill giải và đồng đội đang dính khống chế -> giải;
+      2. có skill khống chế cứng và còn >= 2 địch -> khống chế con nguy hiểm nhất chưa bị khống chế;
+      3. còn lại đánh: skill người dùng đặt cho con này (nếu đủ SP), không thì skill dame cao nhất
+         theo wiki; mục tiêu là con nguy hiểm / ít máu (cùng luật với nhân vật)."""
     from . import combat_rules
     st = client.state
     enemy = sorted(p for p, hp in (getattr(st, "enemy_hp", None) or {}).items() if hp > 0)
@@ -70,13 +131,22 @@ def decide(client, combat, row, col, unit, skill_pref=None):
     pid = pet_id_of(unit)
     skills = _skills(client, pid)
     sp = int(getattr(unit, "sp", 0) or 0)
+    if not (skill_pref and skill_pref in skills):
+        for step in (lambda: _try_cleanse(client, combat, row, col, skills, sp),
+                     lambda: _try_cc(client, combat, row, col, skills, sp, enemy)):
+            try:
+                d = step()
+            except Exception as exc:
+                log.debug("võ tướng phụ: bước hỗ trợ lỗi %s", exc)
+                d = None
+            if d is not None:
+                return d
     sk = None
     if skill_pref and skill_pref in skills and combat._skill_cost(skill_pref) <= sp:
         sk = skill_pref
     if sk is None:
-        n = sum(1 for p in enemy)
-        alive_danger = combat_rules._danger_alive(st)
-        sk = combat_rules.best_attack_skill(combat, skills, sp, 1 if alive_danger else n)
+        n = len(enemy)
+        sk = combat_rules.best_attack_skill(combat, skills, sp, 1 if combat_rules._danger_alive(st) else n)
     pos = combat._lowest_hp_enemy(st, cols)
     if pos is None:
         pos = enemy[0]
