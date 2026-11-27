@@ -2,7 +2,10 @@
 
 Khác ts_bot:
   * Giờ kết thúc lấy theo ``windows.npc40`` của settings (mặc định 23:00), không phải 22:00 cứng.
-  * Thua ``max_consec_losses`` trận LIÊN TIẾP mới dừng (mặc định 3; ts_bot là 2).
+  * Thua thì hồi đầy máu/mana rồi đánh tiếp như TS Manager. ``max_consec_losses`` = 0 (mặc định)
+    là không dừng vì thua; đặt số > 0 thì thua chừng ấy trận LIÊN TIẾP mới dừng (ts_bot là 2).
+  * Sau mỗi trận đọc tầng đã qua từ Thắng Lệnh trong túi (``npc40_progress``) để log tiến độ;
+    qua đủ 40 tầng thì dừng.
 Giữ nguyên ts_bot:
   * Đi tới NPC / mở trận / vào trận tiếp: thử lại tối đa ``MAX_RETRY`` (3) lần.
   * Không thấy hỏi "đánh tiếp?" sau ~180s: cả đội chết hết -> thua; còn sống -> mở lại NPC (3 lần).
@@ -20,12 +23,19 @@ MAX_RETRY = 3
 
 
 def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open=lambda: True,
-             max_consec_losses=3, sleep_fn=time.sleep, poll_interval=0.4, max_advances=30,
-             npc40=None):
+             max_consec_losses=0, sleep_fn=time.sleep, poll_interval=0.4, max_advances=30,
+             npc40=None, floor_fn=None):
     """Trả lý do dừng (chuỗi). ``window_open()`` False = hết giờ sự kiện."""
     if npc40 is None:
         from train_bot import npc40
     lbl = getattr(client, "_label", "?")
+    if floor_fn is None:
+        from . import npc40_progress
+        floor_fn = lambda: npc40_progress.floors_cleared(client)
+    gioi_han = max_consec_losses if max_consec_losses and max_consec_losses > 0 else "∞"
+
+    def thua_du(n):
+        return bool(max_consec_losses) and max_consec_losses > 0 and n >= max_consec_losses
 
     def active():
         return client.running and not stop_event.is_set()
@@ -77,9 +87,9 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
                 return "dừng"
             if npc40._da_thua_that(client):
                 consec += 1
-                log.warning("[%s] 40NPC: không có hỏi đánh tiếp và cả đội đã chết -> thua (liên tiếp %d/%d)",
-                            lbl, consec, max_consec_losses)
-                if consec >= max_consec_losses:
+                log.warning("[%s] 40NPC: không có hỏi đánh tiếp và cả đội đã chết -> thua (liên tiếp %d/%s)"
+                            " -> hồi máu/mana rồi đánh tiếp", lbl, consec, gioi_han)
+                if thua_du(consec):
                     return ket_thuc("thua %d trận liên tiếp" % consec)
             else:
                 thu_lai += 1
@@ -103,11 +113,21 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
         thu_lai = 0
         if client._npc40_last_defeated:
             consec += 1
-            log.warning("[%s] 40NPC: thua 1 trận (liên tiếp %d/%d)", lbl, consec, max_consec_losses)
+            log.warning("[%s] 40NPC: thua 1 trận (liên tiếp %d/%s) -> hồi máu/mana rồi đánh tiếp",
+                        lbl, consec, gioi_han)
         else:
             consec = 0
-        if consec >= max_consec_losses:
+        if thua_du(consec):
             return ket_thuc("thua %d trận liên tiếp" % consec)
+        try:
+            tang = int(floor_fn() or 0)
+        except Exception:
+            tang = 0
+        if tang:
+            client._npc40_floor = tang
+            log.info("[%s] 40NPC: đã qua tầng %d/40 (Thắng Lệnh %d trong túi)", lbl, tang, tang)
+            if tang >= 40:
+                return ket_thuc("đã qua đủ 40 tầng")
         if not window_open():
             return ket_thuc("hết giờ sự kiện")
 

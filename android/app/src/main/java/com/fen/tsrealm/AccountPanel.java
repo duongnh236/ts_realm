@@ -47,8 +47,13 @@ class AccountPanel extends ScrollView {
     private CheckBox remember, rememberPw, cWb, cWbTickets, cWbBuy, cNpc, cNk, cPbDon, cPbDoi;
     private Button btnLogin, btnRun, btnStop;
     private TextView stateLine, charLine;
-    private TextView wbLine, fightLine, charRow, petRow, bossRow, recentView;
-    private LinearLayout loginCard, actCard;
+    private TextView wbLine, npcLine, fightLine, charRow, petRow, bossRow, recentView;
+    private LinearLayout loginCard, actCard, cbCard;
+    private Spinner cbItem;
+    private CheckBox cbBreak;
+    private EditText cbQty, cbSlots, cbRounds, cbKeepVal, cbKeepLv;
+    private Button cbLoad, cbGo, cbStop;
+    private TextView cbLine;
 
     String state = "offline";
     String charName = "";
@@ -130,14 +135,14 @@ class AccountPanel extends ScrollView {
         wbOpts.addView(cWbBuy);
         wbOpts.addView(label(c, "Dừng khi dame hôm nay ≥"));
         wbOpts.addView(wbGoal);
-        loWb = new LoadoutBox(c, wbOpts, "Đội hình đánh boss", "lo_");
+        loWb = new LoadoutBox(c, wbOpts, "Đội hình đánh boss", "lo_", false);
         cNk = Ui.check(c, "Nhị Kiều (2k)  (Chủ nhật 08:00–23:00)", false);
         LinearLayout nkOpts = indent(c);
         loNk = new LoadoutBox(c, nkOpts, "Đội hình Nhị Kiều", "lo_nk_");
         cNpc = Ui.check(c, "40 NPC  (T2/T4/T6 20:00–23:00)", false);
         LinearLayout npcOpts = indent(c);
-        npcLosses = Ui.number(c, "Thua liên tiếp bao nhiêu trận thì dừng", "3");
-        npcOpts.addView(label(c, "Thua liên tiếp mấy trận thì dừng"));
+        npcLosses = Ui.number(c, "0 = thua thì hồi máu/mana rồi đánh tiếp", "0");
+        npcOpts.addView(label(c, "Thua liên tiếp mấy trận thì dừng (0 = không dừng, hồi rồi đánh tiếp)"));
         npcOpts.addView(npcLosses);
         loNpc = new LoadoutBox(c, npcOpts, "Đội hình 40 NPC", "lo_npc40_");
         cPbDon = Ui.check(c, "Phó bản đơn", false);
@@ -173,9 +178,54 @@ class AccountPanel extends ScrollView {
         actCard.addView(ar);
         root.addView(actCard);
 
+        // hợp vật phẩm
+        cbCard = Ui.card(c, "Hợp vật phẩm");
+        cbCard.addView(Ui.text(c, "Chọn món trong túi, số lượng mỗi ô (ví dụ 40 → hợp hàng loạt 40 40 40). Tốn Đồng mỗi lần.", 12, Ui.DIM));
+        cbLoad = Ui.button(c, "Tải danh sách túi", Ui.FIELD);
+        cbLoad.setOnClickListener(v -> loadBag());
+        LinearLayout lr2 = Ui.row(c);
+        lr2.addView(cbLoad);
+        cbCard.addView(lr2);
+        cbItem = spinner(c);
+        setItems(cbItem, new long[]{0}, new String[]{"(bấm Tải danh sách túi)"}, 0);
+        cbCard.addView(label(c, "Vật phẩm"));
+        cbCard.addView(cbItem, spLp(c));
+        cbQty = Ui.number(c, "Số lượng mỗi ô", "40");
+        cbSlots = Ui.number(c, "Số ô (1–3)", "3");
+        cbRounds = Ui.number(c, "0 = hợp tới khi hết", "0");
+        cbCard.addView(label(c, "Số lượng mỗi ô"));
+        cbCard.addView(cbQty);
+        cbCard.addView(label(c, "Số ô nguyên liệu (1–3)"));
+        cbCard.addView(cbSlots);
+        cbCard.addView(label(c, "Số lần hợp (0 = tới khi hết nguyên liệu)"));
+        cbCard.addView(cbRounds);
+        cbBreak = Ui.check(c, "Hợp xong phân giải luôn đồ vừa hợp ra (không đụng đồ cũ trong túi)", true);
+        cbCard.addView(cbBreak);
+        cbKeepVal = Ui.number(c, "0 = tắt", "27");
+        cbKeepLv = Ui.number(c, "0 = tắt", "0");
+        cbCard.addView(label(c, "Giữ lại đồ có giá trị từ ... trở lên (Kiệt Tác = 28; 0 = tắt)"));
+        cbCard.addView(cbKeepVal);
+        cbCard.addView(label(c, "Giữ lại đồ từ cấp ... trở lên (0 = tắt)"));
+        cbCard.addView(cbKeepLv);
+        LinearLayout cr = Ui.row(c);
+        cr.setPadding(0, Ui.dp(c, 8), 0, 0);
+        cbGo = Ui.button(c, "⚗  Hợp", Ui.OK);
+        cbStop = Ui.button(c, "■  Dừng", Ui.BAD);
+        cbGo.setOnClickListener(v -> onCombineClick());
+        cbStop.setOnClickListener(v -> Py.call(r -> poll(), "stop", tab));
+        cr.addView(cbGo);
+        cr.addView(cbStop);
+        cbCard.addView(cr);
+        cbLine = Ui.text(c, "", 13, Ui.TEXT);
+        cbLine.setVisibility(GONE);
+        cbCard.addView(cbLine);
+        root.addView(cbCard);
+
         // trạng thái trận (nhật ký đầy đủ chỉ xuất ra file)
         LinearLayout fight = Ui.card(c, "Trận đấu");
         wbLine = Ui.text(c, "", 13, Ui.DIM);
+        npcLine = Ui.text(c, "", 14, Ui.TEXT);
+        npcLine.setVisibility(GONE);
         fightLine = Ui.text(c, "Chưa vào trận", 15, Ui.TEXT);
         fightLine.setTypeface(Typeface.DEFAULT_BOLD);
         charRow = Ui.text(c, "", 14, Ui.TEXT);
@@ -192,6 +242,7 @@ class AccountPanel extends ScrollView {
         wbLine.setVisibility(GONE);
         for (TextView t : new TextView[]{charRow, petRow, bossRow, recentView}) t.setVisibility(GONE);
         fight.addView(wbLine);
+        fight.addView(npcLine);
         fight.addView(fightLine);
         for (TextView t : new TextView[]{charRow, petRow, bossRow, recentView}) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
@@ -216,8 +267,16 @@ class AccountPanel extends ScrollView {
         String sig = "";
         JSONObject data;
 
+        final boolean withSkills;
+
         LoadoutBox(Context c, LinearLayout box, String title, String prefix) {
+            this(c, box, title, prefix, true);
+        }
+
+        /** ``withSkills`` false (Boss TG): không có ô chọn skill đánh, bot tự đánh skill tốn SP cao nhất. */
+        LoadoutBox(Context c, LinearLayout box, String title, String prefix, boolean withSkills) {
             this.prefix = prefix;
+            this.withSkills = withSkills;
             TextView h = Ui.text(c, title, 14, Ui.TEXT);
             h.setTypeface(Typeface.DEFAULT_BOLD);
             h.setPadding(0, Ui.dp(c, 10), 0, Ui.dp(c, 2));
@@ -233,15 +292,19 @@ class AccountPanel extends ScrollView {
             petBuffTgt = spinner(c);
             box.addView(label(c, "Pet ra trận"));
             box.addView(pet, spLp(c));
-            box.addView(label(c, "Skill đánh của nhân vật"));
-            box.addView(charSkill, spLp(c));
-            box.addView(label(c, "Skill đánh của pet"));
-            box.addView(petSkill, spLp(c));
+            if (withSkills) {
+                box.addView(label(c, "Skill đánh của nhân vật"));
+                box.addView(charSkill, spLp(c));
+                box.addView(label(c, "Skill đánh của pet"));
+                box.addView(petSkill, spLp(c));
+            }
             box.addView(label(c, "Buff của nhân vật"));
             box.addView(pair(c, charBuff, charBuffTgt));
             box.addView(label(c, "Buff của pet"));
             box.addView(pair(c, petBuff, petBuffTgt));
-            box.addView(Ui.text(c, "Skill chưa học / thiếu SP thì bot tự đánh như cũ. Hồi sinh, giải khống chế, giải buff địch vẫn được ưu tiên trước; hết buff thì buff lại.", 12, Ui.DIM));
+            box.addView(Ui.text(c, withSkills
+                    ? "Skill chưa học / thiếu SP thì bot tự đánh như cũ. Hồi sinh, giải khống chế, giải buff địch vẫn được ưu tiên trước; hết buff thì buff lại."
+                    : "Đánh bằng skill gây dame tốn SP cao nhất còn đủ SP. Ưu tiên: giải Đẩu Chuyển, hồi sinh, giải khống chế, giải buff boss (cả Kim Chung Tráo), buff; không dùng skill hồi máu / hồi SP trong trận; boss có Kim Chung Tráo mà chưa giải được thì phòng thủ chờ. Giữa các trận chỉ uống thuốc SP khi SP dưới 30%.", 12, Ui.DIM));
             String[] tg = {"lên Pet", "lên Nhân vật"};
             setItems(charBuffTgt, new long[]{1, 2}, tg, prefs.getLong(prefix + "char_buff_tgt", 1));
             setItems(petBuffTgt, new long[]{1, 2}, tg, prefs.getLong(prefix + "pet_buff_tgt", 1));
@@ -328,8 +391,8 @@ class AccountPanel extends ScrollView {
         /** Ghi lựa chọn vào ``o`` (chưa đăng nhập thì lấy lựa chọn đã lưu lần trước). */
         JSONObject put(JSONObject o) throws org.json.JSONException {
             return o.put("pet_id", keep(pet, "pet"))
-                    .put("char_skill", keep(charSkill, "char_skill"))
-                    .put("pet_skill", keep(petSkill, "pet_skill"))
+                    .put("char_skill", withSkills ? keep(charSkill, "char_skill") : 0)
+                    .put("pet_skill", withSkills ? keep(petSkill, "pet_skill") : 0)
                     .put("char_buff", keep(charBuff, "char_buff"))
                     .put("char_buff_target", selectedId(charBuffTgt) == 2 ? "char" : "pet")
                     .put("pet_buff", keep(petBuff, "pet_buff"))
@@ -445,10 +508,16 @@ class AccountPanel extends ScrollView {
         wbGoal.setText(prefs.getString("wb_goal", "5000000"));
         cNk.setChecked(prefs.getBoolean("nk", false));
         cNpc.setChecked(prefs.getBoolean("npc", false));
-        npcLosses.setText(prefs.getString("npc_losses", "3"));
+        npcLosses.setText(prefs.getString("npc_losses0", "0"));
         cPbDon.setChecked(prefs.getBoolean("pb_don", false));
         cPbDoi.setChecked(prefs.getBoolean("pb_doi", false));
         pbLevel.setText(prefs.getString("pb_level", "50"));
+        cbQty.setText(prefs.getString("cb_qty", "40"));
+        cbSlots.setText(prefs.getString("cb_slots", "3"));
+        cbRounds.setText(prefs.getString("cb_rounds", "0"));
+        cbBreak.setChecked(prefs.getBoolean("cb_break", true));
+        cbKeepVal.setText(prefs.getString("cb_keep_val", "27"));
+        cbKeepLv.setText(prefs.getString("cb_keep_lv", "0"));
     }
 
     private void saveChoices() {
@@ -457,7 +526,7 @@ class AccountPanel extends ScrollView {
                 .putBoolean("wb_buy", cWbBuy.isChecked())
                 .putString("wb_goal", wbGoal.getText().toString())
                 .putBoolean("nk", cNk.isChecked()).putBoolean("npc", cNpc.isChecked())
-                .putString("npc_losses", npcLosses.getText().toString())
+                .putString("npc_losses0", npcLosses.getText().toString())
                 .putBoolean("pb_don", cPbDon.isChecked()).putBoolean("pb_doi", cPbDoi.isChecked())
                 .putString("pb_level", pbLevel.getText().toString());
         loWb.save(e);
@@ -516,7 +585,7 @@ class AccountPanel extends ScrollView {
             opts.put("loadouts", new JSONObject()
                     .put("npc40", loNpc.put(new JSONObject()))
                     .put("nhi_kieu", loNk.put(new JSONObject())));
-            opts.put("max_losses", new JSONObject().put("npc40", Math.max(1, num(npcLosses, 3))));
+            opts.put("max_losses", new JSONObject().put("npc40", Math.max(0, num(npcLosses, 0))).put("nhi_kieu", 0));
             opts.put("team_dungeon_level", num(pbLevel, 50));
         } catch (Exception ignored) {}
         Py.call(r -> { if (!r.optBoolean("ok")) toast(r.optString("error")); poll(); },
@@ -559,11 +628,94 @@ class AccountPanel extends ScrollView {
         if (boss != null && !boss.isNull(0)) sb.append("   ·   Boss TG ").append(boss.opt(0)).append("/").append(boss.opt(1));
         charLine.setText(sb.toString());
         applyBattle(s.optJSONObject("wb"), s.optJSONObject("battle"));
+        applyNpc40(s.optJSONObject("npc40"), "npc40".equals(task));
+        applyCombine(s.optJSONObject("combine"));
         JSONObject lo = s.optJSONObject("loadout");
         for (LoadoutBox b : new LoadoutBox[]{loWb, loNpc, loNk}) b.apply(lo);
         if (changed) {
             refreshButtons();
             if (listener != null) listener.onStateChanged(this);
+        }
+    }
+
+    // ---------- hợp vật phẩm ----------
+    private void loadBag() {
+        Py.call(r -> {
+            if (!r.optBoolean("ok")) { toast(r.optString("error")); return; }
+            JSONArray items = r.optJSONArray("items");
+            int n = items == null ? 0 : items.length();
+            if (n == 0) { toast("Túi chưa có món nào hợp được"); return; }
+            long[] ids = new long[n];
+            String[] labels = new String[n];
+            for (int i = 0; i < n; i++) {
+                JSONObject o = items.optJSONObject(i);
+                ids[i] = o.optLong("tid");
+                labels[i] = o.optString("name") + (o.optInt("lv") > 0 ? "  (lv" + o.optInt("lv") + ")" : "")
+                        + "  ×" + n(o.optLong("qty"));
+            }
+            setItems(cbItem, ids, labels, prefs.getLong("cb_tid", 0));
+        }, "bag_list", tab);
+    }
+
+    private void onCombineClick() {
+        long tid = selectedId(cbItem);
+        if (tid == 0) { toast("Bấm Tải danh sách túi rồi chọn vật phẩm"); return; }
+        prefs.edit().putLong("cb_tid", tid).putString("cb_qty", cbQty.getText().toString())
+                .putString("cb_slots", cbSlots.getText().toString())
+                .putString("cb_rounds", cbRounds.getText().toString())
+                .putBoolean("cb_break", cbBreak.isChecked())
+                .putString("cb_keep_val", cbKeepVal.getText().toString())
+                .putString("cb_keep_lv", cbKeepLv.getText().toString()).apply();
+        JSONObject o = new JSONObject();
+        try {
+            o.put("tid", tid).put("qty", num(cbQty, 40)).put("slots", num(cbSlots, 3)).put("rounds", num(cbRounds, 0))
+                    .put("decompose", cbBreak.isChecked())
+                    .put("keep_bonus", num(cbKeepVal, 27)).put("keep_level", num(cbKeepLv, 0));
+        } catch (Exception ignored) {}
+        Py.call(r -> { if (!r.optBoolean("ok")) toast(r.optString("error")); poll(); }, "combine", tab, o.toString());
+    }
+
+    private void applyCombine(JSONObject o) {
+        if (o == null) { cbLine.setVisibility(GONE); return; }
+        boolean run = o.optBoolean("running");
+        String name = o.optString("name", "");
+        int done = o.optInt("done"), rounds = o.optInt("rounds");
+        StringBuilder sb = new StringBuilder(run ? "⚗ Đang hợp " : "Hợp xong ");
+        sb.append(name).append(": ").append(done).append(rounds > 0 ? "/" + rounds : "").append(" lần");
+        if (o.has("left")) sb.append("  ·  còn ").append(n(o.optLong("left")));
+        if (o.has("used")) sb.append("  ·  đã dùng ").append(n(o.optLong("used")));
+        if (o.optInt("broken") > 0) sb.append("  ·  đã phân giải ").append(o.optInt("broken")).append(" món");
+        if (o.optInt("kept") > 0) sb.append("  ·  ⭐ giữ lại ").append(o.optInt("kept")).append(" món");
+        if (!run && o.has("why")) sb.append("\n").append(o.optString("why"));
+        cbLine.setText(sb.toString());
+        cbLine.setTextColor(run ? Ui.OK : Ui.TEXT);
+        cbLine.setVisibility(VISIBLE);
+    }
+
+    private double npcDoneAt;
+
+    /** Tầng 40 NPC (từ Thắng Lệnh trong túi) khi đang chạy; chạy xong thì báo đi đổi thưởng. */
+    private void applyNpc40(JSONObject o, boolean running) {
+        JSONObject done = o == null ? null : o.optJSONObject("done");
+        int floor = o == null ? 0 : o.optInt("floor", 0);
+        if (running) {
+            npcLine.setText("40 NPC: đã qua " + floor + "/40 tầng");
+            npcLine.setTextColor(Ui.TEXT);
+            npcLine.setVisibility(VISIBLE);
+        } else if (done != null) {
+            int f = done.optInt("floor", floor);
+            npcLine.setText("✅ 40 NPC đã xong (" + done.optString("why", "") + ") — qua " + f
+                    + "/40 tầng.\nNhớ đi đổi Thắng Lệnh lấy thưởng nha!");
+            npcLine.setTextColor(Ui.OK);
+            npcLine.setVisibility(VISIBLE);
+            double at = done.optDouble("at", 0);
+            if (at > 0 && at != npcDoneAt) {
+                if (npcDoneAt != 0 || System.currentTimeMillis() / 1000.0 - at < 120)
+                    toast("40 NPC xong: qua " + f + "/40 tầng — đi đổi thưởng nha");
+                npcDoneAt = at;
+            }
+        } else {
+            npcLine.setVisibility(GONE);
         }
     }
 
@@ -667,6 +819,7 @@ class AccountPanel extends ScrollView {
             case "nhi_kieu": return "Nhị Kiều";
             case "pb_don": return "Phó bản đơn";
             case "pb_doi": return "Phó bản đội";
+            case "combine": return "Hợp vật phẩm";
             default: return t;
         }
     }
@@ -683,6 +836,13 @@ class AccountPanel extends ScrollView {
         btnStop.setEnabled("running".equals(state));
         btnStop.setAlpha("running".equals(state) ? 1f : 0.4f);
         actCard.setAlpha(in ? 1f : 0.6f);
+        boolean online = "online".equals(state), running = "running".equals(state);
+        cbLoad.setEnabled(in);
+        cbGo.setEnabled(online);
+        cbGo.setAlpha(online ? 1f : 0.4f);
+        cbStop.setEnabled(running);
+        cbStop.setAlpha(running ? 1f : 0.4f);
+        cbCard.setAlpha(in ? 1f : 0.6f);
     }
 
     String title() {

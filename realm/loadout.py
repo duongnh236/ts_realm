@@ -86,6 +86,9 @@ def apply(client, opts, rules_mod=None, mode="boss"):
     cfg["pet_roles"] = roles
 
     char_rules = _strip(cfg.get("char") if isinstance(cfg.get("char"), list) else [], tag)
+    # Boss TG không còn chọn skill đánh: combat_rules.boss_attack tự đánh skill tốn SP cao nhất.
+    if mode == "boss":
+        opts = {k: v for k, v in opts.items() if k not in ("char_skill", "pet_skill")}
     cs = int(opts.get("char_skill") or 0)
     if cs:
         char_rules.insert(0, {"skill": cs, "target": "auto", "condition": cond, "tag": tag})

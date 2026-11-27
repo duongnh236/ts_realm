@@ -138,6 +138,50 @@ class DamageTap:
         self.c._dispatch = self._orig
 
 
+class SpSaver:
+    """Giữa các trận Boss TG: ts_bot ``heal_full`` hồi FULL HP+SP bằng thuốc trước/sau mỗi trận.
+    Đổi lại: HP vẫn hồi đầy, SP chỉ uống thuốc khi xuống dưới ``ratio`` (mặc định 30%) SP tối đa."""
+
+    def __init__(self, client, ratio=0.3):
+        self.c, self.ratio = client, float(ratio)
+        self._orig = getattr(client, "heal_full", None)
+        if self._orig is not None:
+            client.heal_full = self.heal_full
+
+    def _need_sp(self, unit):
+        mx = getattr(unit, "sp_max", 0) or 0
+        return mx > 0 and getattr(unit, "sp", 0) < mx * self.ratio
+
+    def heal_full(self, force=False):
+        c = self.c
+        st = c.state
+        if getattr(st, "solo_multipet", False) or not hasattr(c, "_heal_unit"):
+            return self._orig(force=force)
+        busy = st.in_battle if force else c.in_combat()
+        if busy or not c.bag_slots:
+            return
+        ch, pet = st.char, st.pet
+        if ch.hp_max > 0:
+            c._heal_unit(0, ch, "char", "hp_char", "hp", thr_override=1.0, force=force)
+            if self._need_sp(ch):
+                log.info("[%s] Boss TG: SP nhân vật %d/%d < %d%% -> uống thuốc SP", c._label, ch.sp,
+                         ch.sp_max, int(self.ratio * 100))
+                c._heal_unit(0, ch, "char", "sp_char", "sp", thr_override=1.0, force=force)
+        if pet.hp_max > 0:
+            slot = getattr(c, "active_pet_slot", None) or 1
+            if pet.hp <= 0:
+                pet.hp = 1
+            c._heal_unit(slot, pet, "pet", "hp_pet", "hp", thr_override=1.0, force=force)
+            if self._need_sp(pet):
+                log.info("[%s] Boss TG: SP pet %d/%d < %d%% -> uống thuốc SP", c._label, pet.sp,
+                         pet.sp_max, int(self.ratio * 100))
+                c._heal_unit(slot, pet, "pet", "sp_pet", "sp", thr_override=1.0, force=force)
+
+    def remove(self):
+        if self._orig is not None:
+            self.c.heal_full = self._orig
+
+
 def find_ticket(bag_slots, ticket_ids=TICKET_IDS):
     """(slot, template_id, số lượng) của vé dùng trước tiên, hoặc None."""
     for tid in ticket_ids:
@@ -166,6 +210,7 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
         log.info("[%s] Boss TG: chưa đọc được số lượt từ server -> thử vào trận", client._label)
     unknown_fights = 0
     tap = DamageTap(client)
+    saver = SpSaver(client, opts.get("sp_restore_below", 0.3))
     did_any = False
     blind = False
     why = "đủ vòng lặp tối đa"
@@ -256,6 +301,7 @@ def run(client, account, day, damage_log, opts, cho_phep=None, max_loops=300):
                 log.info("[%s] Boss TG: trận này %s dame, hôm nay %s/%s", client._label,
                          format(tap.fight_max, ","), format(total, ","), format(goal, ","))
     finally:
+        saver.remove()
         tap.remove()
     log.info("[%s] Boss TG: dừng — %s", client._label, why)
     return did_any, why

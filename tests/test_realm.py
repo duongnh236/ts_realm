@@ -472,6 +472,45 @@ class Npc40LoopTest(unittest.TestCase):
         why, c, _ = self.run_loop(["win", "win", "win"], window=win)
         self.assertIn("hết giờ", why)
 
+    def test_unlimited_losses_by_default(self):
+        from realm import npc40_loop
+        c = FakeNpcClient(["lose"] * 6 + ["win"])
+        heals = []
+        why = npc40_loop.run_loop(c, (910, 290), threading.Event(), lambda: None,
+                                  before_repeat=lambda: heals.append(1), sleep_fn=lambda s: None,
+                                  npc40=FakeNpc40Mod)
+        self.assertNotIn("liên tiếp", why)
+        self.assertEqual(c.results, [])                # đánh hết, không dừng vì thua
+        self.assertEqual(len(heals), 7)                # hồi đầy sau mỗi trận, kể cả trận thua
+
+    def test_floor_from_bag_and_stop_at_40(self):
+        from realm import npc40_loop, npc40_progress as pg
+        c = FakeNpcClient(["win", "win", "win"])
+        c.bag_slots = {5: [30020, 1]}
+        floors = []
+
+        def floor():
+            f = pg.floors_cleared(c)
+            floors.append(f)
+            c.bag_slots = {5: [30063, 1]}              # trận sau lên tầng 40
+            return f
+        why = npc40_loop.run_loop(c, (910, 290), threading.Event(), lambda: None,
+                                  sleep_fn=lambda s: None, npc40=FakeNpc40Mod, floor_fn=floor)
+        self.assertEqual(floors, [7, 40])
+        self.assertIn("40 tầng", why)
+        self.assertEqual(c._npc40_floor, 40)
+
+
+class Npc40ProgressTest(unittest.TestCase):
+    def test_floors_cleared(self):
+        from realm import npc40_progress as pg
+        self.assertEqual(len(pg.VICTORY_ORDER), 40)
+        self.assertEqual(pg.floors_cleared(NS(bag_slots={})), 0)
+        self.assertEqual(pg.floors_cleared(NS(bag_slots={1: [30014, 1], 2: [30043, 1]})), 30)
+        self.assertEqual(pg.floors_cleared(NS(bag_slots={1: [30054, 1], 2: [46614, 3]})), 31)
+        self.assertEqual(pg.floors_cleared(NS(bag_slots={1: [30063, 0]})), 0)
+        self.assertEqual(pg.floors_cleared(NS()), 0)
+
 
 class TsmDecideTest(unittest.TestCase):
     def setUp(self):
@@ -543,6 +582,11 @@ class TsmDecideTest(unittest.TestCase):
         st = self.st(realm_mode=None, skills_char=[], allies={(3, 2): NS(hp=900, hp_max=1000)})
         self.assertEqual(self.cb.decide_char(st, []), "ORIG_CHAR")
 
+    def test_nhi_kieu_uses_tsm_ai(self):
+        st = self.st(realm_mode="nhi_kieu", skills_char=["cc"], allies={(3, 2): NS(hp=900, hp_max=1000)},
+                     char=NS(sp=200, hp=900, hp_max=1000), enemy_hp={0: 10})
+        self.assertEqual(self.cb.decide_char(st, []), ("CC", "high"))
+
 
 class RunnerTest(unittest.TestCase):
     def setUp(self):
@@ -605,6 +649,173 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(self.runner(c, max_losses={"nhi_kieu": 3}).nhi_kieu())
         self.assertEqual([x[0] for x in c.log], ["go", "crawl", "heal", "crawl"])
 
+    def test_nhi_kieu_keeps_climbing_after_losses(self):
+        c = FakeClient(crawl_results=[True, True, True, True, False])
+        self.assertTrue(self.runner(c).nhi_kieu())
+        self.assertEqual([x[0] for x in c.log].count("crawl"), 5)
+
+    def test_nhi_kieu_stops_when_out_of_tower(self):
+        c = FakeClient(crawl_results=[True, True])
+        c.current_map = 12003
+        r = self.runner(c)
+        orig = r._event
+        r._event = lambda k: dict(orig(k), dest_map=12922, party_battle={"kind": "floor_crawl", "top_map": 12959})
+        self.assertTrue(r.nhi_kieu())
+        self.assertEqual([x[0] for x in c.log], ["go", "crawl"])
+
+    def test_npc40_summary_for_app(self):
+        from realm import npc40_loop
+        orig = npc40_loop.run_loop
+        npc40_loop.run_loop = lambda *a: "hết giờ sự kiện"
+        try:
+            c = FakeClient()
+            c.bag_slots = {3: [30030, 1]}
+            self.assertTrue(self.runner(c).npc40())
+        finally:
+            npc40_loop.run_loop = orig
+        self.assertEqual((c._npc40_summary["floor"], c._npc40_summary["why"]), (17, "hết giờ sự kiện"))
+
+
+
+class FakeBagClient:
+    def __init__(self, slots, take=105, refuse_after=None):
+        self.bag_slots = {k: list(v) for k, v in slots.items()}
+        self.sent = []
+        self.running = True
+        self._label = "acc1"
+        self.state = NS(in_battle=False)
+        self.take, self.refuse_after = take, refuse_after
+
+    def send(self, op, body):
+        self.sent.append((op, body))
+        if self.refuse_after is not None and len(self.sent) > self.refuse_after:
+            return
+        need = self.take
+        for slot in sorted(self.bag_slots):
+            tid, cnt = self.bag_slots[slot]
+            if tid == 40045 and need:
+                k = min(cnt, need)
+                self.bag_slots[slot][1] -= k
+                need -= k
+
+
+class CombineTest(unittest.TestCase):
+    def setUp(self):
+        from realm import combine
+        self.cb = combine
+
+    def run_it(self, c, rounds=0, qty=40, slots=3):
+        return self.cb.run(c, 40045, qty, rounds, threading.Event(), slots, sleep_fn=lambda s: None,
+                           wait=0.01, gap=0)
+
+    def test_payload_matches_capture(self):
+        self.assertEqual(self.cb.payload([(66, 40)] * 3).hex(),
+                         "0e00" + "420028000000" * 3 + "01")
+        self.assertEqual(self.cb.payload([(5, 2)]).hex(), "0e00" + "050002000000" + "000000000000" * 2 + "01")
+
+    def test_plan_spreads_over_stacks(self):
+        c = FakeBagClient({66: [40045, 9108]})
+        self.assertEqual(self.cb.plan(c, 40045, 40), [(66, 40)] * 3)
+        c = FakeBagClient({3: [40045, 50], 9: [40045, 45], 4: [1, 99]})
+        self.assertEqual(self.cb.plan(c, 40045, 40), None)
+        self.assertEqual(self.cb.plan(c, 40045, 25), [(3, 25), (3, 25), (9, 25)])
+
+    def test_rounds_limit(self):
+        c = FakeBagClient({66: [40045, 9108]})
+        r = self.run_it(c, rounds=2)
+        self.assertEqual((r["done"], r["used"]), (2, 210))
+        self.assertEqual(len(c.sent), 2)
+        self.assertEqual(c.sent[0], (0x17, self.cb.payload([(66, 40)] * 3)))
+
+    def test_until_out_of_material(self):
+        c = FakeBagClient({66: [40045, 400]}, take=120)
+        r = self.run_it(c)
+        self.assertEqual(r["done"], 3)
+        self.assertIn("hết nguyên liệu", r["why"])
+
+    def test_stops_when_server_refuses(self):
+        c = FakeBagClient({66: [40045, 9108]}, refuse_after=1)
+        r = self.run_it(c)
+        self.assertEqual(r["done"], 1)
+        self.assertIn("không trừ", r["why"])
+
+    def test_decompose_body_matches_capture(self):
+        b = self.cb.decompose_body(3, [(0x39, 1), (0x4e, 1)])
+        self.assertEqual(b.hex(), "030002" + "390001000000" + "4e0001000000")
+        self.assertEqual(self.cb.decompose_body(4, [(5, 1)])[:3], b"\x04\x00\x01")
+
+    def test_new_gear_only_new_slots(self):
+        items = {20430: {"fc": 690}, 40045: {}, 777: {"fc": 0}, 19030: {"fc": 690}}
+        before = {66: [40045, 9108], 7: [19030, 1]}
+        after = {66: [40045, 9003], 7: [19030, 1], 10: [20430, 1], 11: [777, 1], 12: [40045, 13]}
+        self.assertEqual(self.cb.new_gear(before, after, 40045, items), [(10, 1)])
+
+    def test_combine_then_decompose(self):
+        cb = self.cb
+        c = FakeBagClient({66: [40045, 9108]})
+        orig_send = c.send
+
+        def send(op, body):
+            orig_send(op, body)
+            if op == 0x17:
+                c.bag_slots[100 + len(c.sent)] = [20430, 1]      # đồ hợp ra
+                c.bag_slots[200 + len(c.sent)] = [20430, 1]
+            elif op == 0x59 and body[0] == 3:
+                for i in range(body[2]):
+                    c.bag_slots.pop(int.from_bytes(body[3 + 6 * i:5 + 6 * i], "little"), None)
+        c.send = send
+        orig_items = cb._items
+        cb._items = lambda: {20430: {"fc": 690}}
+        try:
+            r = cb.run(c, 40045, 40, 2, threading.Event(), 3, sleep_fn=lambda s: None, wait=0.01, gap=0,
+                       settle=0)
+        finally:
+            cb._items = orig_items
+        self.assertEqual((r["done"], r["broken"]), (2, 4))
+        self.assertEqual([op for op, _ in c.sent], [0x17, 0x59, 0x59, 0x17, 0x59, 0x59])
+        self.assertEqual([t for t, _ in c.bag_slots.values()], [40045])
+
+    def test_bag_remove_patch(self):
+        from realm import realm_login as rl
+
+        class Base:
+            def __init__(self):
+                self.bag_slots = {0x1d: [20430, 1], 0x142: [40045, 50], 0x42: [1, 5]}
+
+            def _dispatch(self, opcode, pkt):          # giống ts_bot: đọc ô 1 byte, số sai
+                rec = self.bag_slots.get(pkt[9])
+                if rec:
+                    rec[1] = max(0, rec[1] - 256)
+        rl.patch_bag_snapshot(Base)
+        b = Base()
+        pkt = lambda slot, n: b"\xc0\x91\x0f\x00\x00\x00\x17\x09\x00" + slot.to_bytes(2, "little") + n.to_bytes(4, "little")
+        b._dispatch(0x17, pkt(0x1d, 1))
+        b._dispatch(0x17, pkt(0x142, 8))
+        self.assertEqual(b.bag_slots, {0x142: [40045, 42], 0x42: [1, 5]})
+        self.assertEqual(b.bag_counts, {40045: 42, 1: 5})
+
+    def test_keep_good_items(self):
+        items = {20430: {"fc": 690, "lv": 25}, 21431: {"fc": 690, "lv": 26}}
+        before = {66: [40045, 9108]}
+        after = {66: [40045, 9003], 10: [20430, 1], 98: [21431, 1], 99: [20430, 1]}
+        kept = []
+        out = self.cb.new_gear(before, after, 40045, items, {98: 28, 99: 5}, 27, 0, kept)
+        self.assertEqual(out, [(10, 1), (99, 1)])
+        self.assertEqual(kept, [(98, 21431, "giá trị 28")])
+        out = self.cb.new_gear(before, after, 40045, items, {}, 0, 26)
+        self.assertEqual(out, [(10, 1), (99, 1)])
+
+    def test_item_bonus_from_capture(self):
+        from realm import realm_login as rl
+        body = bytes.fromhex("08006200b75301000000" + "00" * 25 + "1c" + "00" * 25)
+        pkt = b"\xc0\x91" + (7 + len(body)).to_bytes(2, "little") + b"\x00\x00\x17" + body
+        self.assertEqual(rl.parse_bag_set_item(pkt)[:2], (0x62, 21431))
+        self.assertEqual(rl.item_bonus(pkt), 28)
+
+    def test_bag_list_groups_by_item(self):
+        c = FakeBagClient({1: [40045, 10], 2: [40045, 5], 3: [777, 1]})
+        lst = self.cb.bag_list(c)
+        self.assertEqual([(x["tid"], x["qty"], x["stacks"]) for x in lst], [(40045, 15, 2), (777, 1, 1)])
 
 class LoginGuardTest(unittest.TestCase):
     def setUp(self):
@@ -652,6 +863,121 @@ class LoginGuardTest(unittest.TestCase):
 
 
 TS_BOT_PY = os.environ.get("TS_BOT_PYTHON", os.path.expanduser("~/Documents/ts_bot/app/src/main/python"))
+
+
+class BossTsmTest(unittest.TestCase):
+    """Boss TG: AI TS Manager, bỏ skill chọn trong app, đánh skill atk tốn SP cao nhất, xử lý Kim Chung Tráo."""
+
+    COST = {10000: 0, 101: 30, 102: 120, 103: 300, 104: 200, 105: 500}
+
+    def setUp(self):
+        fresh_rules()
+        cr.RULES.update({"tsm_modes": ["npc40", "nhi_kieu", "boss"], "reflect_policy": "hold",
+                         "npc40_ai": "ts_manager", "mode_buffs": {}, "boss_buffs": {}})
+        self.cb = cb = fake_combat()
+        cb.config.SKILL_HEAL_ALL, cb.config.HEAL_SP_COST = 11010, 42
+        cb.config.CHAR_FIRE_MIN_SP = cb.config.PET_FIRE_MIN_SP = 65
+        cb.config.SKILL_NORMAL, cb.config.SKILL_DEFEND = 10000, 17001
+        cb.CC_SKILLS = frozenset((104,))            # 104 = khống chế: không dùng để đánh
+        cb._skill_cost = lambda s: self.COST.get(s, 10)
+        cb._is_attack = lambda s: s in (10000, 101, 102, 103, 104, 105)
+        cb._CUSTOM_AUTO = object()
+        cb._custom_decision = lambda *a: _Dec(CHAR, 1, 1, 999)   # skill chọn trong app / luật riêng
+        cb._hang_char_ta = lambda st: 3
+        cb._claim_support_action = lambda *a: True
+        cb._heal_decide = None
+        cb._try_cc = lambda *a: None
+        cb._try_break_enemy_protect = lambda *a: None
+        cb._try_sp_restore = lambda *a: None
+        cb._try_protect = lambda *a: None
+        cb._combat_attack = lambda *a: "ORIG_ATTACK"
+        cr.install(cb)
+
+    def st(self, **kw):
+        kw.setdefault("realm_mode", "boss")
+        kw.setdefault("boss_mode", True)
+        kw.setdefault("allies", {(3, 2): NS(hp=900, hp_max=1000)})
+        kw.setdefault("enemy_hp", {2: 5000})
+        kw.setdefault("enemy_slots", [2])
+        st = fake_state(**kw)
+        st.lowest_hp_ally = lambda: None
+        return st
+
+    def test_highest_sp_attack_skill_ignores_app_skill(self):
+        st = self.st(skills_char=[10000, 101, 102, 103, 104, 105], char=NS(sp=350, hp=900, hp_max=1000))
+        d = self.cb.decide_char(st, [(1, 2)])
+        self.assertEqual((d.skill, d.target, d.b), (103, 2, 0))   # 105 thiếu SP, 104 là khống chế
+
+    def test_no_sp_normal_attack(self):
+        st = self.st(skills_char=[101, 102], char=NS(sp=5, hp=900, hp_max=1000))
+        self.assertEqual(self.cb.decide_char(st, [(1, 2)]).skill, 10000)
+
+    def test_pet_also(self):
+        st = self.st(pet_skills=[101, 102], pet=NS(sp=200, hp=900, hp_max=1000))
+        self.assertEqual(self.cb.decide_pet(st, [(1, 2)]).skill, 102)
+
+    def test_dispel_kim_chung_trao(self):
+        st = self.st(skills_char=[11012, 103], status_by_kind={(0, 2): {"b": 10031}})
+        d = self.cb.decide_char(st, [(1, 2)])
+        self.assertEqual((d.skill, d.target), (11012, 2))
+
+    def test_avoid_reflect_target(self):
+        st = self.st(skills_char=[103], char=NS(sp=350, hp=900, hp_max=1000), status_by_kind={(0, 2): {"b": 10031}},
+                     enemy_hp={2: 100, 3: 9000}, enemy_slots=[2, 3])
+        d = self.cb.decide_char(st, [(1, 2), (1, 3)])
+        self.assertEqual((d.skill, d.target), (103, 3))
+
+    def test_hold_when_all_reflect(self):
+        st = self.st(skills_char=[103], char=NS(sp=350, hp=900, hp_max=1000), status_by_kind={(0, 2): {"b": 10031}})
+        d = self.cb.decide_char(st, [(1, 2)])
+        self.assertEqual((d.skill, d.b), (17001, 3))
+        cr.RULES["reflect_policy"] = "attack"
+        st2 = self.st(skills_char=[103], char=NS(sp=350, hp=900, hp_max=1000), status_by_kind={(0, 2): {"b": 10031}})
+        self.assertEqual(self.cb.decide_char(st2, [(1, 2)]).skill, 103)
+
+    def test_cleanse_boc_cam_before_attack(self):
+        st = self.st(skills_char=[11012, 103], status_by_kind={(3, 2): {"c": 10033}})
+        d = self.cb.decide_char(st, [(1, 2)])
+        self.assertEqual((d.skill, d.b, d.target), (11012, 3, 2))
+
+    def test_no_heal_or_sp_skill_in_boss(self):
+        cb = self.cb
+        cb._try_sp_restore = lambda *a: "SP_RESTORE"
+        st = self.st(skills_char=[11010, 103], char=NS(sp=350, hp=900, hp_max=1000),
+                     allies={(3, 2): NS(hp=50, hp_max=1000), (3, 1): NS(hp=60, hp_max=1000)})
+        self.assertEqual(cb.decide_char(st, [(1, 2)]).skill, 103)
+        cr.RULES["boss_skip"] = []          # tắt bỏ qua -> hồi máu như 40 NPC
+        st2 = self.st(skills_char=[11010, 103], char=NS(sp=350, hp=900, hp_max=1000),
+                      allies={(3, 2): NS(hp=50, hp_max=1000), (3, 1): NS(hp=60, hp_max=1000)})
+        self.assertEqual(cb.decide_char(st2, [(1, 2)]).skill, 11010)
+        cr.RULES["boss_skip"] = ["heal", "sp_restore"]
+
+    def test_sp_saver_between_fights(self):
+        from realm import world_boss as wb
+        calls = []
+        c = NS(_label="a", bag_slots={1: (1, 1)}, active_pet_slot=1, in_combat=lambda: False,
+               state=NS(in_battle=False, solo_multipet=False,
+                        char=NS(hp=500, hp_max=1000, sp=400, sp_max=1000),
+                        pet=NS(hp=500, hp_max=1000, sp=100, sp_max=1000)),
+               heal_full=lambda force=False: calls.append("orig"))
+        c._heal_unit = lambda t, u, lab, key, kind, thr_override=None, force=False: calls.append(key)
+        saver = wb.SpSaver(c, 0.3)
+        c.heal_full(force=True)
+        self.assertEqual(calls, ["hp_char", "hp_pet", "sp_pet"])   # SP nhân vật 40% -> không uống
+        saver.remove()
+        c.heal_full()
+        self.assertEqual(calls[-1], "orig")
+
+    def test_boss_buff_mode(self):
+        st = self.st()
+        self.assertEqual(cr.buff_mode(st), "boss")
+
+    def test_loadout_drops_boss_skill(self):
+        from realm import loadout
+        client = NS(state=NS(battle_config={}, active_pet_id=7))
+        cfg = loadout.apply(client, {"char_skill": 103, "pet_skill": 102, "pet_id": 7}, mode="boss")
+        self.assertEqual(cfg["char"], [])
+        self.assertNotIn("pets", cfg)
 
 
 @unittest.skipUnless(os.path.isdir(os.path.join(TS_BOT_PY, "train_bot")), "không có ts_bot")
@@ -1030,10 +1356,9 @@ class LoadoutTest(unittest.TestCase):
                           "pet_buff": 12045, "pet_buff_target": "pet"}, rules_mod=rules)
         cfg = c.state.battle_config
         self.assertEqual(cfg["pet_roles"], {"boss": 0x2ee2})
-        self.assertEqual(cfg["char"][0]["skill"], 13013)
-        self.assertEqual(cfg["char"][0]["condition"], "boss")
-        self.assertEqual(cfg["char"][1]["skill"], 1)                 # luật cũ giữ nguyên phía sau
-        self.assertEqual(cfg["pets"][str(0x2ee2)][0]["skill"], 13010)
+        # Boss TG bỏ chọn skill đánh (tự đánh skill SP cao nhất) -> không thêm luật skill
+        self.assertEqual([r["skill"] for r in cfg["char"]], [1])     # luật cũ giữ nguyên
+        self.assertNotIn("pets", cfg)
         self.assertEqual(rules.RULES["boss_buffs"], {"pet": {"skill": 12045, "target": "pet"}})
         loadout.apply(c, {}, rules_mod=rules)                         # bỏ chọn -> gỡ sạch
         cfg = c.state.battle_config
@@ -1092,14 +1417,14 @@ class ModeLoadoutTest(unittest.TestCase):
         cfg = c.state.battle_config
         self.assertEqual(cfg["pet_roles"], {"boss": 0x2ee2, "npc40": 0x1111})
         self.assertEqual([(r["skill"], r["condition"]) for r in cfg["char"]],
-                         [(14001, "quest"), (13013, "boss"), (1, "always")])
+                         [(14001, "quest"), (1, "always")])       # boss không còn luật skill
         self.assertEqual(cfg["pets"][str(0x1111)][0]["tag"], "realm_npc40")
         self.assertEqual(cr.RULES["mode_buffs"]["npc40"], {"char": {"skill": 12050, "target": "char"}})
         self.assertEqual(cr.RULES["mode_buffs"]["boss"], {"pet": {"skill": 12045, "target": "pet"}})
         loadout.clear(c, "npc40", rules_mod=cr)
         cfg = c.state.battle_config
         self.assertEqual(cfg["pet_roles"], {"boss": 0x2ee2})             # Boss TG giữ nguyên
-        self.assertEqual([r["skill"] for r in cfg["char"]], [13013, 1])
+        self.assertEqual([r["skill"] for r in cfg["char"]], [1])
         self.assertNotIn("pets", cfg)
         self.assertEqual(cr.RULES["mode_buffs"]["npc40"], {})
         with self.assertRaises(ValueError):

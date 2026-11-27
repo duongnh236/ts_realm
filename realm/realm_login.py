@@ -141,15 +141,50 @@ def patch_bag_snapshot(cls) -> None:
     orig = cls._dispatch
 
     def _dispatch(self, opcode, pkt):
+        rm = parse_bag_remove(pkt) if opcode == 0x17 else None
+        saved = None
+        if rm is not None:
+            # ts_bot đọc S:023-009 với ô 1 byte -> trừ nhầm ô / nhầm số; giữ lại ô nó đụng để trả về
+            k = pkt[9]
+            rec = self.bag_slots.get(k)
+            saved = (k, list(rec) if rec is not None else None)
         orig(self, opcode, pkt)
+        if rm is not None:
+            k, rec = saved
+            if rec is None:
+                self.bag_slots.pop(k, None)
+            else:
+                self.bag_slots[k] = rec
+            slot, n = rm
+            cur = self.bag_slots.get(slot)
+            if cur is not None:
+                left = int(cur[1]) - n
+                if left > 0:
+                    self.bag_slots[slot] = [cur[0], left]
+                else:
+                    self.bag_slots.pop(slot, None)
+                    getattr(self, "bag_bonus", {}).pop(slot, None)
+            counts = {}
+            for t, c in self.bag_slots.values():
+                counts[t] = counts.get(t, 0) + c
+            self.bag_counts = counts
         if opcode == 0x17:
             upd = parse_bag_set_item(pkt)
             if upd is not None:
                 slot, tid, cnt = upd
+                bonus = getattr(self, "bag_bonus", None)
+                if bonus is None:
+                    bonus = self.bag_bonus = {}
                 if tid > 0 and cnt > 0:
                     self.bag_slots[slot] = [tid, cnt]
+                    v = item_bonus(pkt)
+                    if v:
+                        bonus[slot] = v
+                    else:
+                        bonus.pop(slot, None)
                 else:
                     self.bag_slots.pop(slot, None)
+                    bonus.pop(slot, None)
                 counts = {}
                 for t, c in self.bag_slots.values():
                     counts[t] = counts.get(t, 0) + c
@@ -158,6 +193,7 @@ def patch_bag_snapshot(cls) -> None:
             if slots is not None:
                 self.bag_slots = slots
                 self.bag_items = {}          # ThingData 56B khác 35B của ts_bot -> không đoán
+                self.bag_bonus = {}
                 counts = {}
                 for tid, cnt in slots.values():
                     counts[tid] = counts.get(tid, 0) + cnt
@@ -165,6 +201,29 @@ def patch_bag_snapshot(cls) -> None:
 
     cls._dispatch = _dispatch
     cls._realm_bag_patched = True
+
+
+def item_bonus(pkt: bytes) -> int:
+    """"Giá trị" riêng của món trong S:023-008 (u16 ở pkt[42:44] = byte 26 sau ô/mã/số lượng).
+
+    Capture 27/11: món Kiệt Tác Sáng Ma Thủ (21431) hợp ra có giá trị 28, 26 món thường đều 0.
+    Chưa rõ tên chỉ số (có thể là điểm cộng thêm); dùng để chừa đồ tốt khi tự phân giải."""
+    if len(pkt) < 44:
+        return 0
+    return int.from_bytes(pkt[42:44], "little")
+
+
+def parse_bag_remove(pkt: bytes):
+    """S:023-009 (trừ đồ khỏi một ô) của TS Realm -> (ô, số lượng), khác định dạng thì None.
+
+    ``09 00 | ô u16 | số lượng u32`` - capture 27/11: phân giải 8 món -> 8 gói ``0900 1d00 01000000`` ..."""
+    if len(pkt) < 15 or pkt[6] != 0x17 or pkt[7:9] != b"\x09\x00":
+        return None
+    slot = int.from_bytes(pkt[9:11], "little")
+    n = int.from_bytes(pkt[11:15], "little")
+    if not 0 < slot < 1000 or not 0 < n < 10_000_000:
+        return None
+    return slot, n
 
 
 def parse_bag_set_item(pkt: bytes):

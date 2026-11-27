@@ -9,3 +9,4 @@ android/local.properties
 android/.signing/
 runtime/
 dist/
+captures/

@@ -32,12 +32,17 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          "boss_style": "auto", "auto_guard_hp": 0.5,
          # AI đánh 40 NPC theo thứ tự vai trò của TS Manager (party_battle_roles_policy)
          "dau_chuyen_first": True,
-         "npc40_ai": "ts_manager", "party_hp_emergency": 0.5, "guard_hp": 0.5,
+         "npc40_ai": "ts_manager", "tsm_modes": ["npc40", "nhi_kieu", "boss"], "party_hp_emergency": 0.5, "guard_hp": 0.5,
          "guard_outnumbered_by": 2,
          # Buff theo chế độ: {"boss"|"npc40"|"nhi_kieu": {"char": {"skill": id, "target": "pet"|"char"},
          # "pet": {...}}} (app chọn, realm.loadout.apply ghi vào). Rỗng = không buff.
          # "boss_buffs" = tên cũ của mode_buffs["boss"].
-         "mode_buffs": {}, "boss_buffs": {}, "buff_min_gap": 3}
+         "mode_buffs": {}, "boss_buffs": {}, "buff_min_gap": 3,
+         # Boss TG: mọi con địch còn lại đều có Kim Chung Tráo (phản dame) mà không giải được ->
+         # "hold" = phòng thủ chờ hết / chờ đồng đội giải, "attack" = vẫn đánh.
+         "reflect_policy": "hold",
+         # Boss TG: bước bỏ qua trong trận ("heal" = skill hồi máu, "sp_restore" = skill hồi SP)
+         "boss_skip": ["heal", "sp_restore"]}
 
 _realm_rules = threading.local()   # .only = True: chỉ đọc luật skill do app chọn
 
@@ -129,7 +134,7 @@ MODE_NAMES = {"boss": "buff boss", "npc40": "buff 40 NPC", "nhi_kieu": "buff Nh�
 def buff_mode(state):
     """Chế độ đang đánh để chọn bộ buff: 40 NPC / Nhị Kiều (realm_mode) hoặc boss (boss_mode)."""
     rm = getattr(state, "realm_mode", None)
-    if rm in ("npc40", "nhi_kieu"):
+    if rm in ("npc40", "nhi_kieu", "boss"):
         return rm
     if getattr(state, "boss_mode", False):
         return "boss"
@@ -246,7 +251,7 @@ def avoid_barrier(combat, state, offered, pos):
     if not alt:
         return pos  # con nao cung co Ket Gioi -> danh nhu cu
     new = min(alt, key=lambda x: x[1])[0]
-    log.info("[%s] ô %d có Kết Giới -> đánh ô %d trước, chờ giải", state.label, pos, new)
+    log.info("[%s] ô %d có Kết Giới / phản dame -> đánh ô %d trước, chờ giải", state.label, pos, new)
     return new
 
 
@@ -288,16 +293,22 @@ def _guard_first(state, stat):
     return low or outnumbered
 
 
-def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min):
+def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, attack=None, skip=()):
     """Đẩu Chuyển trên địch (ưu tiên nhất, theo yêu cầu) -> thứ tự của TS Manager: hồi sinh -> hồi máu party khi nguy -> giải khống chế đồng đội ->
     (khiên trước nếu đang yếu / bị áp đảo) -> khống chế địch -> giải buff địch -> phá khiên -> buff người dùng chọn -> khiên ->
     hồi SP party -> đánh (tránh con có Kết Giới, ưu tiên con ít máu)."""
+    if attack is None:
+        def attack():
+            return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
     if getattr(stat, "hp_max", 0) > 0 and getattr(stat, "hp", 0) <= 0:
         return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
+    heal = (lambda: None) if "heal" in skip else (lambda: _party_heal(combat, state, unit, skills, stat, tag))
+    sp_restore = (lambda: None) if "sp_restore" in skip else (
+        lambda: combat._try_sp_restore(state, unit, skills, stat))
     steps = (
         lambda: try_top_dispel(combat, state, unit, skills, stat, options),
         lambda: combat._try_revive(state, unit, skills, stat, options),
-        lambda: _party_heal(combat, state, unit, skills, stat, tag),
+        heal,
         lambda: try_cleanse(combat, state, unit, skills, stat, options),
         lambda: combat._try_protect(state, unit, skills, stat) if _guard_first(state, stat) else None,
         lambda: combat._try_cc(state, unit, skills, stat, options, "high"),
@@ -306,17 +317,66 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min):
         lambda: combat._try_break_enemy_protect(state, unit, skills, stat, options),
         lambda: try_buff(combat, state, unit, skills, stat, options),
         lambda: combat._try_protect(state, unit, skills, stat),
-        lambda: combat._try_sp_restore(state, unit, skills, stat),
+        sp_restore,
     )
     for step in steps:
         d = step()
         if d is not None:
             return d
-    return combat._combat_attack(state, unit, skills, stat, options, spam, fire_min)
+    return attack()
+
+
+def best_attack_skill(combat, skills, sp):
+    """Skill gây dame (không phải khống chế) TỐN SP NHẤT mà còn đủ SP. Không có -> đánh thường."""
+    cc = getattr(combat, "CC_SKILLS", frozenset())
+    normal = getattr(combat.config, "SKILL_NORMAL", 10000)
+    cand = [s for s in (skills or ()) if s != normal and s not in cc and combat._is_attack(s)
+            and combat._skill_cost(s) <= sp]
+    if not cand:
+        return normal
+    return max(cand, key=lambda s: (combat._skill_cost(s), -list(skills).index(s)))
+
+
+def boss_attack(combat, state, unit, skills, stat, options):
+    """Bước đánh của Boss TG: bỏ skill người dùng chọn, đánh skill atk tốn SP cao nhất đủ SP vào con
+    ít máu nhất, né con có Kết Giới / Kim Chung Tráo. Mọi con đều phản dame -> phòng thủ (reflect_policy)."""
+    cfg = combat.config
+    at = state.my_atype
+    # như ts_bot: chỉ đánh khi có dữ liệu quái MỚI kể từ lần đánh trước của unit này
+    gen_attr = "last_atk_gen_char" if unit == cfg.UNIT_CHAR else "last_atk_gen_pet"
+    gen = getattr(state, "enemy_gen", None)
+    if gen is not None:
+        if getattr(state, gen_attr, -1) == gen:
+            return None
+        setattr(state, gen_attr, gen)
+    es = getattr(state, "enemy_slots", None)
+    if not es:
+        return None
+    offered = combat._offered_targets(options, at)
+    fb = offered[0] if offered else 1
+    pos = combat._lowest_hp_enemy(state, offered)
+    if pos is None and hasattr(combat, "_train_target"):
+        pos = combat._train_target(es, offered)
+    if pos is not None and RULES.get("reflect_policy", "hold") == "hold":
+        refl = sl.reflect_targets(getattr(state, "status_by_kind", None) or {},
+                                  getattr(state, "enemy_rows", (0, 1)))
+        if (combat._row(pos), combat._col(pos)) in refl:
+            log.info("[%s] Boss TG: địch còn lại đều có Kim Chung Tráo -> %s phòng thủ chờ giải",
+                     state.label, "nhân vật" if unit == cfg.UNIT_CHAR else "pet")
+            row = combat._hang_cua(state, unit) if hasattr(combat, "_hang_cua") else (
+                getattr(state, "char_row", 3) if unit == cfg.UNIT_CHAR else 2)
+            return combat.Decision(unit, at, at, getattr(cfg, "SKILL_DEFEND", 17001), b=row)
+    sk = best_attack_skill(combat, skills, getattr(stat, "sp", 0))
+    if hasattr(combat, "_attack"):
+        return combat._attack(unit, at, pos, sk, fb, offered)
+    return combat.Decision(unit, at, combat._col(pos) if pos is not None else fb, sk,
+                           b=combat._row(pos) if pos is not None else 0)
 
 
 def _use_tsm(state):
-    return (getattr(state, "support_combat", False) and getattr(state, "realm_mode", None) == "npc40"
+    """AI đánh kiểu TS Manager (``tsm_decide``) cho các chế độ trong ``tsm_modes`` (40 NPC, Nhị Kiều)."""
+    return (getattr(state, "support_combat", False)
+            and getattr(state, "realm_mode", None) in tuple(RULES.get("tsm_modes") or ())
             and RULES.get("npc40_ai", "ts_manager") == "ts_manager")
 
 
@@ -368,9 +428,19 @@ def install(combat, rules: dict = None):
         c = combat._custom_decision(state, unit, key, skills, stat, options)
         return None if c is getattr(combat, "_CUSTOM_AUTO", object()) else c
 
+    def _boss(state, unit, skills, stat, options, tag, spam, fire_min):
+        # Boss TG: không dùng skill chọn trong app / luật riêng, AI TS Manager + đánh skill SP cao nhất
+        # Không dùng skill hồi máu / hồi SP trong trận boss (đã có hồi sinh) -> dồn hết lượt vào dame.
+        return tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min,
+                          attack=lambda: boss_attack(combat, state, unit, skills, stat, options),
+                          skip=tuple(RULES.get("boss_skip", ("heal", "sp_restore"))))
+
     def decide_char(state, options, first_turn=False):
         cfg = combat.config
         combat._register_current_unit(state, cfg.UNIT_CHAR, state.skills_char)
+        if _use_tsm(state) and getattr(state, "realm_mode", None) == "boss":
+            return _boss(state, cfg.UNIT_CHAR, state.skills_char, state.char, options,
+                         "char", "char_spam", getattr(cfg, "CHAR_FIRE_MIN_SP", 0))
         if _use_tsm(state):
             c = _custom(state, cfg.UNIT_CHAR, "char", state.skills_char, state.char, options)
             return c if c is not None else tsm_decide(
@@ -381,6 +451,10 @@ def install(combat, rules: dict = None):
 
     def decide_pet(state, options, first_turn=False):
         cfg = combat.config
+        if _use_tsm(state) and getattr(state, "realm_mode", None) == "boss":
+            combat._register_current_unit(state, cfg.UNIT_PET, state.pet_skills)
+            return _boss(state, cfg.UNIT_PET, state.pet_skills, state.pet, options,
+                         "pet", "pet_spam", getattr(cfg, "PET_FIRE_MIN_SP", 0))
         if _use_tsm(state):
             combat._register_current_unit(state, cfg.UNIT_PET, state.pet_skills)
             c = _custom(state, cfg.UNIT_PET, "pet", state.pet_skills, state.pet, options)

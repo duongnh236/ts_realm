@@ -75,6 +75,7 @@ BOSS_BUFFS = {
     10020: 'Địa Khí',
     10026: 'Linh Kính',
     10031: 'Chung Trảo',
+    10044: 'Chung Phản',
     10038: 'Song Kính',
     10039: 'Duệ Kính',
     10040: 'Thuẫn Kính',
@@ -120,11 +121,14 @@ BOSS_BUFFS = {
 
 # --- Theo Battle AI cua TS Manager ban PC (battle_ai_scenario_generated) ---
 # Buff dich DANG giai (ENEMY_DISPEL_WORTHY_BUFF_SKILL_IDS). Buff khac: khong ton luot giai.
-DISPEL_WORTHY_BUFFS = frozenset((21026, 10010, 10026, 11002, 13021))   # Nhan Gia Vo Dich, Ket Gioi, Linh Kinh, Bang Tuong, Dau Chuyen
+# Buff PHAN DAME tren nguoi dich: Kim Chung Trao 10031 (he Dia, cat 4) + hieu ung Chung Phan 10044.
+# Danh vao la an phan dame -> giai, khong thi danh con khac, con lai toan con phan dame thi phong thu.
+REFLECT_BUFFS = frozenset((10031, 10044))
+DISPEL_WORTHY_BUFFS = frozenset((21026, 10010, 10026, 11002, 13021, 10031, 10044))   # + Nhan Gia Vo Dich, Ket Gioi, Linh Kinh, Bang Tuong, Dau Chuyen, Kim Chung Trao
 # Buff dich phai giai TRUOC MOI VIEC (yeu cau user 25/11): Dau Chuyen 13021 (he Phong, fight_way 4).
 TOP_PRIORITY_DISPEL = frozenset((13021,))
 # Dich dang co Ket Gioi: khong dap dame vao, cho giai truoc (DAMAGE_AVOID_ENEMY_BUFF_SKILL_IDS).
-DAMAGE_AVOID_BUFFS = frozenset((10010,))
+DAMAGE_AVOID_BUFFS = frozenset((10010,)) | REFLECT_BUFFS
 # Thu tu uu tien giai cho dong doi (CLEANSE_ALLY_LADDER): NV he Thuy/Dia > NV he Phong/Hoa > NV khac > Tuong.
 # Ma he: 1 Dia, 2 Thuy, 3 Hoa, 4 Phong.
 CLEANSE_ALLY_LADDER = ((1, 2), (3, 4))
@@ -276,3 +280,9 @@ def avoid_damage_targets(status_by_kind, enemy_rows):
     """O dich dang co Ket Gioi -> khong danh vao (cho giai). Tra set((row, col))."""
     return {pos for pos in status_by_kind or {}
             if pos[0] in enemy_rows and any(x in DAMAGE_AVOID_BUFFS for x in _statuses(status_by_kind, pos))}
+
+
+def reflect_targets(status_by_kind, enemy_rows):
+    """O dich dang mang buff phan dame (Kim Chung Trao)."""
+    return {pos for pos in (status_by_kind or {})
+            if pos[0] in enemy_rows and any(x in REFLECT_BUFFS for x in _statuses(status_by_kind, pos))}

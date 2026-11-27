@@ -7,6 +7,8 @@ Java gọi các hàm cấp module, mọi giá trị trả về là chuỗi JSON 
     stop(tab) / logout(tab)
     status(tab)                       -> {"state": ..., "char": ..., "map": ..., "task": ...}
     logs(tab, since)                  -> {"next": n, "lines": [...]}
+    bag_list(tab)                     -> {"ok": true, "items": [{tid, name, qty, stacks}]}
+    combine(tab, opts_json)           -> {"ok": true}  opts: {tid, qty, rounds, slots, decompose, keep_bonus, keep_level} (chạy nền)
 Chạy được cả trên máy tính (test) nếu đã ``bootstrap.prepare``.
 """
 from __future__ import annotations
@@ -95,6 +97,7 @@ class Session:
         self._llock = threading.Lock()
         self.view = None
         self.wb_settings = {}
+        self.combine_info = None
 
     def owns(self, msg, tname):
         """Dòng log thuộc phiên này: thread của phiên, hoặc có ``[user]`` / ``[tên nhân vật]``."""
@@ -224,6 +227,51 @@ class Session:
         self.worker.start()
         return {"ok": True}
 
+    # ---- hợp vật phẩm ----
+    def bag_list(self):
+        if self.client is None or not self.client.running:
+            return {"ok": False, "error": "chưa đăng nhập"}
+        from . import combine
+        return {"ok": True, "items": combine.bag_list(self.client)}
+
+    def combine(self, opts):
+        if self.client is None or not self.client.running:
+            return {"ok": False, "error": "chưa đăng nhập"}
+        if self.worker is not None and self.worker.is_alive():
+            return {"ok": False, "error": "đang chạy %s" % self.task}
+        from . import combine
+        tid, qty = int(opts.get("tid") or 0), int(opts.get("qty") or 0)
+        rounds, n_slots = int(opts.get("rounds") or 0), int(opts.get("slots") or combine.MAX_SLOTS)
+        err = None if tid else "chưa chọn vật phẩm"
+        err = err or combine.check(self.client, tid, qty, n_slots)
+        if err:
+            return {"ok": False, "error": err}
+        self.stop_event = threading.Event()
+        self.combine_info = {"tid": tid, "done": 0, "rounds": rounds, "running": True}
+
+        def progress(p):
+            self.combine_info = dict(p, running=True)
+
+        def work():
+            self.state, self.task = "running", "combine"
+            try:
+                r = combine.run(self.client, tid, qty, rounds, self.stop_event, n_slots, progress=progress,
+                                auto_decompose=bool(opts.get("decompose", True)),
+                                keep_bonus=int(opts.get("keep_bonus", 27) or 0),
+                                keep_level=int(opts.get("keep_level", 0) or 0))
+                self.combine_info = dict(self.combine_info or {}, running=False, **r)
+                self.say("Hợp vật phẩm: %s — %d lần" % (r.get("why"), r.get("done", 0)))
+            except Exception as exc:
+                self.combine_info = dict(self.combine_info or {}, running=False, why="lỗi: %s" % exc)
+                self.say("Lỗi hợp vật phẩm: %s" % exc)
+            finally:
+                self.task = ""
+                self.state = "online" if (self.client is not None and self.client.running) else "offline"
+
+        self.worker = threading.Thread(target=work, daemon=True, name=self.thread_prefix + "-combine")
+        self.worker.start()
+        return {"ok": True}
+
     def stop(self):
         self.stop_event.set()
         c = self.client
@@ -247,6 +295,14 @@ class Session:
             out.update(char=getattr(c, "char_name", None), map=getattr(c, "current_map", None),
                        boss=[getattr(c, "world_boss_count", None), getattr(c, "world_boss_max", None)])
             out["wb"] = self._wb_summary(c)
+            if self.combine_info:
+                out["combine"] = self.combine_info
+            try:
+                from .npc40_progress import floors_cleared
+                out["npc40"] = {"floor": floors_cleared(c) or int(getattr(c, "_npc40_floor", 0) or 0),
+                                "done": getattr(c, "_npc40_summary", None)}
+            except Exception:
+                pass
             try:
                 from .loadout import loadout
                 out["loadout"] = loadout(c)
@@ -346,6 +402,14 @@ def export_log(tab):
 
 def logs(tab, since=0):
     return _json(_session(tab).logs(since))
+
+
+def bag_list(tab):
+    return _json(_session(tab).bag_list())
+
+
+def combine(tab, opts_json="{}"):
+    return _json(_session(tab).combine(json.loads(opts_json or "{}")))
 
 
 def busy_count():

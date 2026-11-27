@@ -2,8 +2,11 @@
 
 Giờ mở lấy theo APK TS Manager (giờ server UTC+7, sửa được trong settings.json):
   * Boss Thế Giới 10:00–23:00: 5 lượt free, rồi dùng vé trong túi tới khi đủ dame / hết vé.
-  * 40 NPC: T2/T4/T6 20:00–23:00. Thua thì hồi rồi đánh tiếp; thua ``max_losses.npc40`` (3) trận liên tiếp thì dừng.
-  * Nhị Kiều: Chủ nhật 08:00–23:00. Leo tháp 12922 -> 12959; thua đủ ``max_losses`` thì bỏ lượt.
+  * 40 NPC: T2/T4/T6 20:00–23:00. Thua thì hồi đầy máu/mana rồi đánh tiếp tới hết giờ hoặc qua đủ
+    40 tầng (``max_losses.npc40`` > 0 thì thua chừng ấy trận liên tiếp mới dừng). Xong thì ghi
+    ``client._npc40_summary`` để app báo "đi đổi thưởng".
+  * Nhị Kiều: Chủ nhật 08:00–23:00. Leo tháp 12922 -> 12959; thua thì hồi đầy rồi leo tiếp từ tầng
+    đang đứng, tới khi bị đưa ra khỏi tháp / hết giờ (``max_losses.nhi_kieu`` > 0 thì giới hạn số lần thua).
   * Phó bản đơn: tới khi server báo xong lượt (tự mua vé theo ts_bot).
   * Phó bản đội: chỉ chủ phòng chạy; tạo phòng theo cấp 20/50/80/110.
 """
@@ -134,10 +137,12 @@ class Runner:
         except Exception as exc:
             log.warning("[%s] Boss TG: không áp được đội hình (%s) -> đánh tự động", account, exc)
         self._support(True)
+        self.c.state.realm_mode = "boss"      # AI TS Manager + skill atk SP cao nhất (combat_rules)
         try:
             ok, _why = wb.run(self.c, account, day, dlog, opts, cho_phep=self._cho_phep)
             return ok
         finally:
+            self.c.state.realm_mode = None
             self._support(False)
 
     def pb_don(self):
@@ -170,8 +175,10 @@ class Runner:
         if not self.c.go_to_event(ev):
             log.warning("40 NPC: không vào được sân")
             return False
-        from . import npc40_loop
-        max_consec = int((self.s.get("max_losses") or {}).get("npc40", 3) or 3)
+        from . import npc40_loop, npc40_progress
+        max_consec = int((self.s.get("max_losses") or {}).get("npc40", 0) or 0)
+        self.c._npc40_summary = None
+        why = None
         point = tuple(ev["party_battle"]["point"])
         self._support(True)
         self.c.state.quest_mode = True
@@ -183,9 +190,14 @@ class Runner:
                                       window_open=lambda: in_window(self.window("npc40")),
                                       max_consec_losses=max_consec)
             why = self._wait_thread(t)
-            log.info("40 NPC: dừng — %s", res.get("why") or why)
+            why = res.get("why") or why
+            log.info("40 NPC: dừng — %s", why)
         finally:
             self.c.stop_npc40_loop()
+            tang = npc40_progress.floors_cleared(self.c) or int(getattr(self.c, "_npc40_floor", 0) or 0)
+            self.c._npc40_summary = {"floor": tang, "total": npc40_progress.TOTAL_FLOORS,
+                                     "why": why or "dừng", "at": time.time()}
+            log.info("40 NPC: XONG — đã qua %d/40 tầng, nhớ đi đổi Thắng Lệnh lấy thưởng", tang)
             self.c.state.quest_mode = False
             self.c.state.realm_mode = None
             self._loadout_off("npc40", pet_switched)
@@ -200,7 +212,7 @@ class Runner:
         if not self.c.go_to_event(ev):
             log.warning("Nhị Kiều: không vào được tháp")
             return False
-        max_losses = int((self.s.get("max_losses") or {}).get("nhi_kieu", 0))
+        max_losses = int((self.s.get("max_losses") or {}).get("nhi_kieu", 0) or 0)
         losses = {"n": 0, "last": False}
         done = threading.Event()
 
@@ -230,6 +242,11 @@ class Runner:
                 if max_losses and losses["n"] >= max_losses:
                     log.info("Nhị Kiều: thua đủ %d trận -> bỏ lượt hôm nay (như APK)", max_losses)
                     break
+                if not self._in_tower(ev):
+                    log.info("Nhị Kiều: thua và đã bị đưa ra khỏi tháp (map %s) -> hết lượt",
+                             getattr(self.c, "current_map", None))
+                    break
+                log.info("Nhị Kiều: thua lần %d -> hồi đầy máu/mana rồi leo tiếp từ tầng đang đứng", losses["n"])
                 self.c.heal_npc40_between_battles()
                 time.sleep(3)
         finally:
@@ -238,6 +255,18 @@ class Runner:
             self._loadout_off("nhi_kieu", pet_switched)
             self._support(False)
         return True
+
+    def _in_tower(self, ev):
+        """Còn đứng trong tháp Nhị Kiều không (dest_map..top_map). Thiếu dữ liệu thì coi như còn."""
+        dest = int(ev.get("dest_map") or 0)
+        top = int(((ev.get("party_battle") or {}).get("top_map")) or 0)
+        try:
+            m = int(getattr(self.c, "current_map", 0) or 0)
+        except (TypeError, ValueError):
+            return True
+        if not (dest and top and m):
+            return True
+        return dest <= m <= top
 
     ALL = ("world_boss", "nhi_kieu", "npc40", "pb_don", "pb_doi")
 
