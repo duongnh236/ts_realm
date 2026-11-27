@@ -50,7 +50,10 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          # 40 NPC / Nhị Kiều / Boss TG: con có skill nguy hiểm (realm/npc_danger.py) bị đánh trước,
          # cùng mức thì con ít máu. danger_min_tier: 1 = cả skill đánh toàn phe, 2 = khống chế mềm /
          # Kết Giới trở lên, 3 = chỉ phản dame + khống chế cứng diện rộng.
-         "danger_first": True, "danger_min_tier": 1}
+         "danger_first": True, "danger_min_tier": 1,
+         # Chế độ (ngoài boss) mà bước đánh tự động chọn skill theo dame wiki (auto_attack) thay cho ts_bot.
+         # Skill đánh chọn trong app vẫn được ưu tiên. Thêm chế độ phó bản tuần vào đây khi có.
+         "damage_modes": ["npc40", "nhi_kieu"]}
 
 _realm_rules = threading.local()   # .only = True: chỉ đọc luật skill do app chọn
 
@@ -430,10 +433,10 @@ def boss_sp_restore(combat, state, unit, skills, stat):
     return combat.Decision(unit, state.my_atype, low[1], int(tid), b=low[0])
 
 
-def best_attack_skill(combat, skills, sp):
-    """Skill gây dame (không phải khống chế) còn đủ SP, DAME LÊN 1 MỤC TIÊU cao nhất theo wiki
-    (realm/skill_power.py: skill đánh toàn đội chỉ ăn 1/3 dame lên boss), bằng nhau thì skill tốn SP
-    hơn. Không có -> đánh thường."""
+def best_attack_skill(combat, skills, sp, enemies=1):
+    """Skill gây dame (không phải khống chế) còn đủ SP, dame cao nhất theo wiki (realm/skill_power.py).
+    ``enemies`` = 1: dame lên 1 mục tiêu (skill đánh toàn đội chỉ ăn 1/3); > 1: tổng dame lên các con
+    còn sống. Bằng nhau thì skill tốn SP hơn. Không có -> đánh thường."""
     cc = getattr(combat, "CC_SKILLS", frozenset())
     normal = getattr(combat.config, "SKILL_NORMAL", 10000)
     cand = [s for s in (skills or ()) if s != normal and s not in cc and combat._is_attack(s)
@@ -441,13 +444,21 @@ def best_attack_skill(combat, skills, sp):
     if not cand:
         return normal
     order = list(skills)
-    return max(cand, key=lambda s: (round(skill_power.single_target_score(s), 4), combat._skill_cost(s),
+    return max(cand, key=lambda s: (round(skill_power.total_score(s, enemies), 4), combat._skill_cost(s),
                                     -order.index(s)))
 
 
-def boss_attack(combat, state, unit, skills, stat, options):
-    """Bước đánh của Boss TG: bỏ skill người dùng chọn, đánh skill dame lên 1 mục tiêu cao nhất đủ SP vào con
-    ít máu nhất, né con có Kết Giới / Kim Chung Tráo. Mọi con đều phản dame -> phòng thủ (reflect_policy)."""
+def _danger_alive(state):
+    lv = int(RULES.get("danger_min_tier", 1))
+    return any(hp > 0 and npc_danger.danger_of(state, p) >= lv
+               for p, hp in (getattr(state, "enemy_hp", None) or {}).items())
+
+
+def auto_attack(combat, state, unit, skills, stat, options, boss=False):
+    """Bước đánh tự động theo dame (Boss TG, 40 NPC, Nhị Kiều; ``damage_modes``).
+    Boss / còn con nguy hiểm: dồn dame 1 mục tiêu vào con nguy hiểm nhất / ít máu nhất. Không có con
+    nguy hiểm: skill tổng dame cao nhất lên các con còn sống, skill đánh nhiều con thì nhắm giữa cụm.
+    Né con có Kết Giới / Kim Chung Tráo; Boss mà mọi con đều phản dame -> phòng thủ (reflect_policy)."""
     cfg = combat.config
     at = state.my_atype
     # như ts_bot: chỉ đánh khi có dữ liệu quái MỚI kể từ lần đánh trước của unit này
@@ -465,7 +476,7 @@ def boss_attack(combat, state, unit, skills, stat, options):
     pos = combat._lowest_hp_enemy(state, offered)
     if pos is None and hasattr(combat, "_train_target"):
         pos = combat._train_target(es, offered)
-    if pos is not None and RULES.get("reflect_policy", "hold") == "hold":
+    if boss and pos is not None and RULES.get("reflect_policy", "hold") == "hold":
         refl = sl.reflect_targets(getattr(state, "status_by_kind", None) or {},
                                   getattr(state, "enemy_rows", (0, 1)))
         if (combat._row(pos), combat._col(pos)) in refl:
@@ -474,11 +485,27 @@ def boss_attack(combat, state, unit, skills, stat, options):
             row = combat._hang_cua(state, unit) if hasattr(combat, "_hang_cua") else (
                 getattr(state, "char_row", 3) if unit == cfg.UNIT_CHAR else 2)
             return combat.Decision(unit, at, at, getattr(cfg, "SKILL_DEFEND", 17001), b=row)
-    sk = best_attack_skill(combat, skills, getattr(stat, "sp", 0))
+    enemies = 1 if boss or _danger_alive(state) else _alive_count(getattr(state, "enemy_hp", None)) or len(es)
+    sp = getattr(stat, "sp", 0)
+    # như ts_bot (quest): unit có skill hồi sinh / hồi máu giữ SP cho vai trò hồi, SP thấp thì đánh thường
+    if (not boss and hasattr(combat, "_has_support_skill") and combat._has_support_skill(skills or ())
+            and sp <= getattr(cfg, "SUPPORT_RESERVE_SP", 100)):
+        sp = 0
+    sk = best_attack_skill(combat, skills, sp, enemies)
+    if enemies > 1 and skill_power.targets(sk) > 1 and hasattr(combat, "_train_target"):
+        center = combat._train_target(es, offered)
+        if center is not None:
+            pos = avoid_barrier(combat, state, offered, center)
     if hasattr(combat, "_attack"):
         return combat._attack(unit, at, pos, sk, fb, offered)
     return combat.Decision(unit, at, combat._col(pos) if pos is not None else fb, sk,
                            b=combat._row(pos) if pos is not None else 0)
+
+
+def boss_attack(combat, state, unit, skills, stat, options):
+    """Bước đánh của Boss TG: bỏ skill người dùng chọn, đánh skill dame lên 1 mục tiêu cao nhất đủ SP vào con
+    ít máu nhất, né con có Kết Giới / Kim Chung Tráo. Mọi con đều phản dame -> phòng thủ (reflect_policy)."""
+    return auto_attack(combat, state, unit, skills, stat, options, boss=True)
 
 
 def _use_tsm(state):
@@ -517,6 +544,8 @@ def install(combat, rules: dict = None):
                 _realm_rules.only = False
             if d is not None and d is not getattr(combat, "_CUSTOM_AUTO", object()):
                 return d
+            if _use_tsm(state) and getattr(state, "realm_mode", None) in tuple(RULES.get("damage_modes") or ()):
+                return auto_attack(combat, state, unit, skills, stat, options)
         return orig_attack(state, unit, skills, stat, options, spam_attr, fire_min)
 
     def _support(state, unit, skills, stat, options):

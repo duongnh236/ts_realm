@@ -2025,9 +2025,57 @@ class RealmRuleOrderTest(unittest.TestCase):
         self.assertEqual(self.cb.decide_char(self.st([realm_rule]), []), "REVIVE")
         self.cb._try_revive = lambda *a: None
         self.assertEqual(self.cb.decide_char(self.st([realm_rule]), []), ("RULE", 14001))
-        self.assertEqual(self.cb.decide_char(self.st([]), []), "ATTACK")
+        cr.RULES["damage_modes"] = []
+        self.assertEqual(self.cb.decide_char(self.st([]), []), "ATTACK")         # tắt: bước đánh của ts_bot
+        cr.RULES["damage_modes"] = ["npc40", "nhi_kieu"]
         user_rule = {"skill": 999, "condition": "always"}                       # luật riêng của người dùng
         self.assertEqual(self.cb.decide_char(self.st([user_rule, realm_rule]), []), ("RULE", 999))
+
+
+class DamageAttackTest(unittest.TestCase):
+    """40 NPC / Nhị Kiều: bước đánh tự động chọn skill theo dame wiki (auto_attack)."""
+    COST = {10000: 0, 10001: 9, 10012: 50, 13010: 40, 13013: 49}
+
+    def setUp(self):
+        fresh_rules()
+        cr.RULES.update({"damage_modes": ["npc40", "nhi_kieu"], "npc40_ai": "ts_manager",
+                         "tsm_modes": ["npc40", "nhi_kieu", "boss"], "danger_first": True, "danger_min_tier": 1})
+        cb = self.cb = fake_combat()
+        cb.config.SKILL_NORMAL, cb.config.SKILL_DEFEND = 10000, 17001
+        cb.config.CHAR_FIRE_MIN_SP = cb.config.PET_FIRE_MIN_SP = 0
+        cb.config.SKILL_HEAL_ALL, cb.config.HEAL_SP_COST = 11010, 42
+        cb.CC_SKILLS = frozenset()
+        cb._skill_cost = lambda s: self.COST.get(s, 10)
+        cb._is_attack = lambda s: s in self.COST
+        cb._train_target = lambda es, off: 1                # giữa cụm
+        for n in ("_try_cc", "_try_break_enemy_protect", "_try_sp_restore"):
+            setattr(cb, n, lambda *a: None)
+        cb._try_protect = lambda *a: None
+        cb._custom_decision = lambda *a: None
+        cb._battle_rules = lambda *a: []
+        cb._combat_attack = lambda *a: "ORIG"
+        cr.install(cb)
+
+    def st(self, skills, hp, tids=None, mode="npc40"):
+        units = {(p // 10, p % 10): NS(template_id=t) for p, t in (tids or {}).items()}
+        st = fake_state(realm_mode=mode, skills_char=skills, char=NS(sp=300, hp=900, hp_max=1000),
+                        enemy_hp=hp, enemy_slots=sorted(p for p, v in hp.items() if v > 0),
+                        tracker=NS(units=units), allies={(3, 2): NS(hp=900, hp_max=1000)})
+        st.lowest_hp_ally = lambda: None
+        return st
+
+    def test_many_enemies_aoe_center(self):
+        d = self.cb.decide_char(self.st([10001, 10012], {0: 500, 1: 400, 2: 300, 3: 200}), [(1, 0), (1, 1), (1, 2), (1, 3)])
+        self.assertEqual((d.skill, d.target), (10012, 1))        # 4 con: Long Trời (0,78/3 x 4) > Mưa Đá
+
+    def test_danger_alive_focus_single(self):
+        d = self.cb.decide_char(self.st([10001, 10012], {0: 500, 1: 400, 2: 300, 3: 200}, {0: 45276}),
+                                [(1, 0), (1, 1), (1, 2), (1, 3)])
+        self.assertEqual((d.skill, d.target), (10001, 0))        # Đại Kiều Đẩu Chuyển: dồn dame đơn
+
+    def test_single_enemy_strongest(self):
+        d = self.cb.decide_char(self.st([13013, 13010], {2: 900}, mode="nhi_kieu"), [(1, 2)])
+        self.assertEqual(d.skill, 13010)                         # Liên kích x1,6 > Loạn kích x1,11
 
 
 def json_copy(d):

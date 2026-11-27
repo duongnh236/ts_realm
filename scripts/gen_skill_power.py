@@ -40,9 +40,10 @@ def main(path):
     rows = json.load(open(path, encoding="utf-8"))
     out = [(r["id"], parse(r), r["name"]) for r in rows]
     # skill wiki không ghi công thức dame (buff, khống chế, gọi thú dame cố định...) -> 0
-    out = [(i, p or (0.0, 0.0, 0.0), n) for i, p, n in out]
+    out = [(i, (p or (0.0, 0.0, 0.0)) + (int(r.get("nt") or 1),), n)
+           for (i, p, n), r in zip(out, rows)]
     print('"""SINH TỰ ĐỘNG bởi scripts/gen_skill_power.py từ wiki TS Realm (data/wiki/skill.json)."""')
-    print("# mã skill -> (hệ số sức mạnh, phần dame mỗi mục tiêu, %% cộng thêm cấp max), 0 = không có công thức dame. %d skill." % len(out))
+    print("# mã skill -> (hệ số sức mạnh, phần dame mỗi mục tiêu, %% cộng thêm cấp max, số mục tiêu), 0 = không có công thức dame. %d skill." % len(out))
     print("POWER = {")
     for i, p, n in out:
         print("    %d: %r,  # %s" % (i, p, n.strip()))
