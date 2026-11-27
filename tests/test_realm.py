@@ -1492,6 +1492,102 @@ class BattleViewTest(unittest.TestCase):
         self.assertEqual(snap["recent"][0], "Lượt 1 · Nhân vật: Loạn Kích → Boss  (-5.000)")
 
 
+def _realm_pet_list(pets):
+    """S:015-008 khuôn TS Realm: [(mã pet, tên, {ô: mã đồ})] -> frame đủ header."""
+    body = bytearray(b"\x08\x00\x09" + bytes([len(pets)]))
+    for i, (pid, name, eq) in enumerate(pets, 1):
+        nm = name.encode("utf-8")
+        head = bytearray(35 + len(nm))
+        head[0] = i
+        head[1:3] = pid.to_bytes(2, "little")
+        head[31] = len(nm)
+        head[32:32 + len(nm)] = nm
+        head[32 + len(nm):35 + len(nm)] = b"\x0a\x0a\x0a"
+        things = bytearray(6 * 56)
+        for fit, tid in eq.items():
+            things[(fit - 1) * 56:(fit - 1) * 56 + 2] = tid.to_bytes(2, "little")
+        body += head + things + bytes(9)
+    body = bytes(body[:2]) + bytes(body[3:])   # bỏ byte đệm: [sub 2B][n 1B]
+    return b"\xc0\x91" + (7 + len(body)).to_bytes(2, "little") + b"\x00\x00\x0f" + body
+
+
+class WeaponSkillTest(unittest.TestCase):
+    EX = 60001                                  # mã giả cho test
+
+    def setUp(self):
+        from realm import weapon_skills as ws
+        self.ws = ws
+        self._saved = (dict(ws.WEAPON_SKILLS), dict(ws.SKILLS))
+        ws.WEAPON_SKILLS[64515] = (self.EX,)
+        ws.SKILLS[self.EX] = {"name": "Chấn Điện EX", "cost": 90, "cat": 1, "splash": 4}
+
+    def tearDown(self):
+        self.ws.WEAPON_SKILLS.clear()
+        self.ws.WEAPON_SKILLS.update(self._saved[0])
+        self.ws.SKILLS.clear()
+        self.ws.SKILLS.update(self._saved[1])
+
+    def _client_cls(self):
+        seen = []
+
+        class Cli:
+            def __init__(self):
+                self.state = NS(carried_pets=[])
+                self.pet_equip_by_fit = {}
+
+            def pet_usable_skills(self, pid):
+                return {0xb0a5: [13009, 13013, 13024], 0xb085: [12013, 12014, 12021]}.get(pid, [])
+
+            def _dispatch(self, opcode, pkt):
+                # như ts_bot: đọc danh sách pet xong là gọi pet_usable_skills ngay
+                seen.append(self.pet_usable_skills(0xb0a5))
+        self.ws.patch_client(Cli)
+        return Cli, seen
+
+    def test_parse_weapons_from_realm_pet_list(self):
+        pkt = _realm_pet_list([(0xb0a5, "", {1: 20120, 3: 64515}), (0xb085, "Tào", {3: 64508})])
+        self.assertEqual(self.ws.pet_weapons(pkt), {0xb0a5: 64515, 0xb085: 64508})
+        from realm import realm_login
+        self.assertIsNotNone(realm_login.pet_list_to_vn(pkt))   # cùng khuôn bản vá danh sách pet
+        self.assertEqual(self.ws.pet_weapons(pkt[:-5]), {})
+
+    def test_weapon_skill_added_before_ts_bot_reads_pet_list(self):
+        Cli, seen = self._client_cls()
+        c = Cli()
+        self.assertEqual(c.pet_usable_skills(0xb0a5), [13009, 13013, 13024])    # chưa biết vũ khí
+        c._dispatch(0x0F, _realm_pet_list([(0xb0a5, "", {3: 64515}), (0xb085, "", {3: 64508})]))
+        self.assertEqual(seen[-1], [13009, 13013, 13024, self.EX])
+        self.assertEqual(c.pet_usable_skills(0xb085), [12013, 12014, 12021])    # vũ khí chưa có trong bảng
+
+    def test_fallback_to_ts_bot_equipment_table(self):
+        Cli, _ = self._client_cls()
+        c = Cli()
+        c.state.carried_pets = [(0xb085, "Tào"), (0xb0a5, "Triệu Vân")]
+        c.pet_equip_by_fit = {2: {3: 64515}}
+        self.assertEqual(c.pet_usable_skills(0xb0a5)[-1], self.EX)
+
+    def test_skill_info_and_boss_picks_weapon_skill(self):
+        cfg = NS(SKILL_INFO={13013: {"name": "Loạn Kích", "cost": 49, "cat": 1}}, SKILL_NORMAL=10000)
+        self.ws.fill_skill_info(cfg)
+        self.assertEqual(cfg.SKILL_INFO[self.EX]["name"], "Chấn Điện EX")
+        info = cfg.SKILL_INFO
+        comb = NS(config=cfg, CC_SKILLS=frozenset(), _skill_cost=lambda s: info[s]["cost"],
+                  _is_attack=lambda s: info[s]["cat"] in (1, 2))
+        skills = [13013, self.EX]
+        self.assertEqual(cr.best_attack_skill(comb, skills, 200), self.EX)
+        self.assertEqual(cr.best_attack_skill(comb, skills, 60), 13013)          # thiếu SP cho EX
+
+    def test_battle_view_logs_unknown_own_skill_once(self):
+        from realm.battle_view import BattleView
+        c = NS(battle_tracker=None, state=NS(my_atype=2), _dispatch=lambda o, p: None)
+        v = BattleView(c, skill_names={13013: "Loạn Kích"}, npc_names={})
+        ev = NS(kind="action", source=(2, 2), position=(0, 2), skill_id=self.EX, payload=())
+        with self.assertLogs("bot", "WARNING") as lg:
+            v.on_events([ev, ev])
+        self.assertEqual(len(lg.output), 1)
+        self.assertIn("skill lạ %d" % self.EX, lg.output[0])
+
+
 class WorldBossAutoBuyTest(unittest.TestCase):
     def setUp(self):
         from realm import world_boss as wb

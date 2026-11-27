@@ -74,6 +74,8 @@ def install(client_module) -> None:
         patch_pet_list(cls)
         patch_notices(cls)
     patch_potion_data(client_module)
+    from . import weapon_skills
+    weapon_skills.install(client_module)   # sau patch_pet_list: phải đọc vũ khí trước khi cắt ThingData
     try:
         import importlib
         bt = importlib.import_module(client_module.__name__.rsplit(".", 1)[0] + ".battle_tracker")

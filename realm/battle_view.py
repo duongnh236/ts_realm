@@ -7,7 +7,10 @@ S:050-001 thành nguồn -> đích + skill + máu thay đổi) và ``client._dis
 from __future__ import annotations
 
 import collections
+import logging
 import threading
+
+log = logging.getLogger("bot")
 
 HP_ATTR = 25                  # thuộc tính máu trong S:050-001 / S:051-001
 ROLE_NAMES = {"char": "Nhân vật", "pet": "Pet", "boss": "Boss", "ally": "Đồng đội"}
@@ -135,6 +138,13 @@ class BattleView:
             if k == HP_ATTR and delta < 0:
                 dmg += -int(delta)
         who, tgt = self.role_of(src), self.role_of(dst)
+        if who in ("char", "pet") and sid not in self._skills:
+            seen = self.__dict__.setdefault("_unknown_seen", set())
+            if sid not in seen:
+                seen.add(sid)
+                # thường là skill vũ khí chuyên dụng / skill mới của TS Realm: thêm vào realm/weapon_skills.py
+                log.warning("Trận đấu: %s dùng skill lạ %d (0x%04x) chưa có trong dữ liệu",
+                            ROLE_NAMES.get(who, who), sid, sid)
         with self._lock:
             key = (turn, src)
             rec = self._turn_acts.get(key)
