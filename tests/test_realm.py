@@ -2163,3 +2163,31 @@ class PartyTest(unittest.TestCase):
         self.assertEqual(seen, {"mode": "npc40", "support": True})
         self.assertIsNone(m.state.realm_mode)
         self.assertFalse(m.state.support_combat)
+
+
+class PetOrderTest(unittest.TestCase):
+    """realm/pet_order.py: đưa võ tướng chọn lên đầu danh sách bằng C:033-014 (đổi chỗ 2 ô)."""
+
+    def test_plan(self):
+        from realm import pet_order as po
+        slots = [(1, 0x3715), (2, 0x2ee2), (3, 0x2eef), (4, 0x32d0), (5, 0xb166)]
+        self.assertEqual(po.plan(slots, [0x2eef]), [(1, 3)])                 # như capture 27/11 18:21
+        self.assertEqual(po.plan(slots, [0x3715, 0x2ee2]), [])               # đã đúng thứ tự
+        self.assertEqual(po.plan(slots, [0x32d0, 0x3715, 0x9999]), [(1, 4), (2, 4)])
+
+    def test_arrange_sends_swaps(self):
+        from realm import pet_order as po
+        sent = []
+        c = NS(_label="a", state=NS(in_battle=False),
+               _realm_pet_slots=[(1, 0x3715), (2, 0x2ee2), (3, 0x2eef)])
+
+        def send(op, payload):
+            sent.append((op, payload.hex()))
+            c._realm_swap_result = (0, payload[2], payload[3], 0)   # server: mã 0 = được
+            c._realm_swap_event.set()
+        c.send = send
+        self.assertTrue(po.arrange(c, [0x2eef, 0x3715]))
+        self.assertEqual(sent, [(0x21, "0e000103"), (0x21, "0e000203")])
+        self.assertEqual(c._realm_pet_slots, [(1, 0x2eef), (2, 0x3715), (3, 0x2ee2)])
+        c.state.in_battle = True
+        self.assertFalse(po.arrange(c, [0x2ee2]))                            # trong trận: không đổi

@@ -81,6 +81,8 @@ class Runner:
         Trả True nếu đã đổi pet (để lúc xong đổi lại)."""
         opts = dict((self.s.get("loadouts") or {}).get(mode) or {})
         from . import combat_rules, loadout
+        if self.party and opts.get("party_pets"):
+            self._arrange_party_pets(mode, opts.get("party_pets"))
         try:
             loadout.apply(self.c, opts, rules_mod=combat_rules, mode=mode)
         except Exception as exc:
@@ -94,6 +96,15 @@ class Runner:
         except Exception as exc:
             log.warning("%s: đổi pet lỗi (%s)", mode, exc)
             return False
+
+    def _arrange_party_pets(self, mode, pets):
+        """Đi party: đưa các võ tướng người dùng chọn lên đầu danh sách (realm/pet_order.py) để
+        chúng ra trận (party chỉ cho mỗi người vài con: võ tướng đi theo + các con đứng đầu)."""
+        from . import pet_order
+        try:
+            pet_order.arrange(self.c, [int(p) for p in pets])
+        except Exception as exc:
+            log.warning("%s: xếp võ tướng xuất chiến party lỗi (%s)", mode, exc)
 
     def _loadout_off(self, mode, pet_switched):
         from . import combat_rules, loadout

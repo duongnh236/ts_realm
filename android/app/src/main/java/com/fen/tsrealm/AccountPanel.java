@@ -272,6 +272,8 @@ class AccountPanel extends ScrollView {
     private class LoadoutBox {
         final String prefix;
         final Spinner pet, charSkill, petSkill, charBuff, charBuffTgt, petBuff, petBuffTgt;
+        /** Đi party: võ tướng đưa lên đầu danh sách để ra trận (40 NPC / Nhị Kiều). */
+        final Spinner[] partyPets = new Spinner[3];
         final TextView hint;
         String sig = "";
         JSONObject data;
@@ -311,6 +313,14 @@ class AccountPanel extends ScrollView {
             box.addView(pair(c, charBuff, charBuffTgt));
             box.addView(label(c, "Buff của pet"));
             box.addView(pair(c, petBuff, petBuffTgt));
+            for (int i = 0; i < partyPets.length; i++) partyPets[i] = spinner(c);
+            if (withSkills) {
+                box.addView(label(c, "Võ tướng xuất chiến khi đi party (theo thứ tự)"));
+                for (Spinner sp : partyPets) box.addView(sp, spLp(c));
+                box.addView(Ui.text(c, "Đánh một mình thì cả 9 võ tướng ra trận. Đi party mỗi người chỉ được vài con: "
+                        + "pet ra trận ở trên + các võ tướng đứng đầu danh sách. Bot đổi chỗ để các con chọn ở đây "
+                        + "lên đầu trước khi đánh.", 12, Ui.DIM));
+            }
             box.addView(Ui.text(c, withSkills
                     ? "Skill chưa học / thiếu SP thì bot tự đánh như cũ. Hồi sinh, giải khống chế, giải buff địch vẫn được ưu tiên trước; hết buff thì buff lại."
                     : "Đánh bằng skill gây dame tốn SP cao nhất còn đủ SP. Ưu tiên: giải Đẩu Chuyển, hồi sinh, giải khống chế, giải buff boss (cả Kim Chung Tráo), buff; không dùng skill hồi máu trong trận, ai SP dưới 30% thì dùng skill hồi SP, không có skill thì nhân vật cho uống thuốc SP trong túi; boss có Kim Chung Tráo mà chưa giải được thì phòng thủ chờ. Trước mỗi trận hồi đầy HP/SP, hết thuốc thì dừng (không đốt vé); trận treo 90 giây thì ngắt.", 12, Ui.DIM));
@@ -325,7 +335,8 @@ class AccountPanel extends ScrollView {
         }
 
         void enable(boolean on) {
-            for (Spinner sp : new Spinner[]{pet, charSkill, petSkill, charBuff, charBuffTgt, petBuff, petBuffTgt}) {
+            for (Spinner sp : new Spinner[]{pet, charSkill, petSkill, charBuff, charBuffTgt, petBuff, petBuffTgt,
+                    partyPets[0], partyPets[1], partyPets[2]}) {
                 sp.setEnabled(on);
                 sp.setAlpha(on ? 1f : 0.5f);
             }
@@ -379,6 +390,9 @@ class AccountPanel extends ScrollView {
             for (int i = 0; i < a.length; i++) a[i] = ids.get(i);
             long keepPet = keep(pet, "pet");
             setItems(pet, a, labels.toArray(new String[0]), keepPet);
+            labels.set(0, "Không chọn");
+            for (int i = 0; i < partyPets.length; i++)
+                setItems(partyPets[i], a, labels.toArray(new String[0]), keep(partyPets[i], "party_pet" + i));
             JSONArray cs = lo.optJSONArray("char_skills");
             long keepCS = keep(charSkill, "char_skill");
             long keepCB = keep(charBuff, "char_buff");
@@ -393,12 +407,20 @@ class AccountPanel extends ScrollView {
                 e.putLong(prefix + "pet", selectedId(pet)).putLong(prefix + "char_skill", selectedId(charSkill))
                         .putLong(prefix + "pet_skill", selectedId(petSkill)).putLong(prefix + "char_buff", selectedId(charBuff))
                         .putLong(prefix + "pet_buff", selectedId(petBuff));
+                for (int i = 0; i < partyPets.length; i++)
+                    e.putLong(prefix + "party_pet" + i, selectedId(partyPets[i]));
             }
             e.putLong(prefix + "char_buff_tgt", selectedId(charBuffTgt)).putLong(prefix + "pet_buff_tgt", selectedId(petBuffTgt));
         }
 
         /** Ghi lựa chọn vào ``o`` (chưa đăng nhập thì lấy lựa chọn đã lưu lần trước). */
         JSONObject put(JSONObject o) throws org.json.JSONException {
+            JSONArray pp = new JSONArray();
+            if (withSkills) for (int i = 0; i < partyPets.length; i++) {
+                long id = keep(partyPets[i], "party_pet" + i);
+                if (id != 0) pp.put(id);
+            }
+            o.put("party_pets", pp);
             return o.put("pet_id", keep(pet, "pet"))
                     .put("char_skill", withSkills ? keep(charSkill, "char_skill") : 0)
                     .put("pet_skill", withSkills ? keep(petSkill, "pet_skill") : 0)
