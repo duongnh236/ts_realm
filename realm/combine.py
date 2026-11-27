@@ -30,6 +30,8 @@ MAX_REFUSED = 0                        # server từ chối bao nhiêu lần li�
 RETRY_WAIT = 3.0                       # nghỉ trước khi thử lại sau một lần bị từ chối
 RETRY_WAIT_MAX = 10.0                  # bị từ chối liên tục thì giãn dần tới mức này
 DECOMPOSE_BATCH = 8                    # client gốc phân giải tối đa 8 ô một lượt
+DECOMPOSE_TRIES = 3                    # server nuốt lượt phân giải thì gửi lại bấy nhiêu lần
+PENDING_ROUNDS = 3                     # món phân giải hụt được thử lại ở bấy nhiêu lần hợp sau rồi bỏ
 SETTLE = 0.8                           # chờ server bỏ hết đồ hợp ra vào túi
 
 
@@ -87,29 +89,43 @@ def new_gear(before, after, material, items, bonus=None, keep_bonus=0, keep_leve
     return out
 
 
-def decompose(client, entries, stop_event, sleep_fn=time.sleep, now=time.time, wait=WAIT_RESULT):
-    """Phân giải ``entries`` theo lượt 8 ô như client gốc. Trả số ô đã phân giải xong."""
+def decompose(client, entries, stop_event, sleep_fn=time.sleep, now=time.time, wait=WAIT_RESULT,
+              tries=DECOMPOSE_TRIES):
+    """Phân giải ``entries`` theo lượt 8 ô như client gốc. Trả số ô đã phân giải xong.
+
+    Server thỉnh thoảng nuốt mất một lượt (log 27/11 15:54: lượt 2 gồm 3 ô gửi đi, 6 giây không có
+    S:089-003 hay S:023-009 nào) -> gửi lại các ô còn nằm trong túi, tối đa ``tries`` lần mỗi lượt.
+    Lượt nào vẫn không xong thì bỏ qua, phân giải tiếp các lượt sau."""
     done = 0
     entries = list(entries)
     for i in range(0, len(entries), DECOMPOSE_BATCH):
         if stop_event.is_set():
             break
         batch = entries[i:i + DECOMPOSE_BATCH]
-        client.send(0x59, decompose_body(4, batch))
-        sleep_fn(0.5)
-        client.send(0x59, decompose_body(3, batch))
-        slots = {s for s, _ in batch}
-        deadline = now() + wait
+        tids = {s: int(((getattr(client, "bag_slots", None) or {}).get(s) or (0, 0))[0]) for s, _ in batch}
 
         def left():
             bag = getattr(client, "bag_slots", None) or {}
-            return [s for s in slots if s in bag and int(bag[s][1]) > 0]
-        while left() and now() < deadline and not stop_event.is_set():
-            sleep_fn(0.2)
-        rest = left()
-        done += len(slots) - len(rest)
-        if rest:
-            break
+            return [(s, q) for s, q in batch
+                    if s in bag and int(bag[s][1]) > 0 and int(bag[s][0]) == tids[s]]
+        rest = batch
+        for k in range(max(1, int(tries))):
+            if stop_event.is_set():
+                break
+            if k:
+                log.info("[%s] Phân giải: server chưa xử lý %d ô -> gửi lại (%d/%d)",
+                         getattr(client, "_label", "?"), len(rest), k + 1, tries)
+            client.send(0x59, decompose_body(4, rest))
+            sleep_fn(0.5)
+            client.send(0x59, decompose_body(3, rest))
+            deadline = now() + wait
+            while left() and now() < deadline and not stop_event.is_set():
+                sleep_fn(0.2)
+            rest = left()
+            if not rest:
+                break
+            sleep_fn(1.0)
+        done += len(batch) - len(rest)
         sleep_fn(0.4)
     return done
 
@@ -264,6 +280,7 @@ def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
     start = total(client, tid)
     done, why, broken, kept_n = 0, "xong", 0, 0
     refused, last_fee, fee_total = 0, 0, 0
+    pending = {}                                    # ô -> (mã, số lần phân giải hụt)
     items = _items()
     log.info("[%s] Hợp vật phẩm: %s, %d ô × %d cái, %s (đang có %d)", lbl, name, n_slots, qty,
              "%d lần" % rounds if rounds > 0 else "tới khi hết", start)
@@ -342,13 +359,37 @@ def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
                 kept_n += 1
                 log.info("[%s] ⭐ Giữ lại %s ở ô %d (%s), không phân giải", lbl,
                          (items.get(ktid) or {}).get("name") or ktid, slot, kwhy)
+            bag_now = getattr(client, "bag_slots", None) or {}
+            for slot in list(pending):                      # món phân giải hụt ở lần trước
+                ptid, n = pending[slot]
+                rec = bag_now.get(slot)
+                if rec is None or int(rec[1]) <= 0 or int(rec[0]) != ptid:
+                    pending.pop(slot)
+                elif all(slot != g for g, _ in gear):
+                    gear.append((slot, int(rec[1])))
             if gear:
                 ok = decompose(client, gear, stop_event, sleep_fn, now, wait)
                 broken += ok
                 log.info("[%s] Phân giải %d/%d món vừa hợp ra", lbl, ok, len(gear))
                 if ok < len(gear) and not stop_event.is_set():
-                    why = "phân giải không xong (%d/%d món) — dừng để fen kiểm tra" % (ok, len(gear))
-                    break
+                    bag_now = getattr(client, "bag_slots", None) or {}
+                    miss = 0
+                    for slot, _ in gear:
+                        rec = bag_now.get(slot)
+                        if rec is None or int(rec[1]) <= 0:
+                            pending.pop(slot, None)
+                            continue
+                        n = pending.get(slot, (int(rec[0]), 0))[1] + 1
+                        if n >= PENDING_ROUNDS:
+                            pending.pop(slot, None)
+                            log.warning("[%s] Bỏ qua %s ở ô %d: phân giải %d lần không được", lbl,
+                                        (items.get(int(rec[0])) or {}).get("name") or rec[0], slot, n)
+                        else:
+                            pending[slot] = (int(rec[0]), n)
+                            miss += 1
+                    if miss:
+                        log.warning("[%s] Còn %d món chưa phân giải được -> hợp tiếp, thử lại ở lần sau",
+                                    lbl, miss)
         if progress is not None:
             try:
                 progress({"tid": tid, "name": name, "done": done, "rounds": rounds, "left": after,

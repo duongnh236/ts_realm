@@ -892,6 +892,49 @@ class CombineTest(unittest.TestCase):
         self.assertEqual([op for op, _ in c.sent], [0x17, 0x59, 0x59, 0x17, 0x59, 0x59])
         self.assertEqual([t for t, _ in c.bag_slots.values()], [40045])
 
+    def _gear_client(self, swallow):
+        """Mỗi lần hợp ra 2 món; ``swallow(n)`` True = server nuốt lượt phân giải thứ n."""
+        c = FakeBagClient({66: [40045, 9108]})
+        orig_send = c.send
+        c.decomp = 0
+
+        def send(op, body):
+            orig_send(op, body)
+            if op == 0x17:
+                c.bag_slots[100 + len(c.sent)] = [20430, 1]
+                c.bag_slots[200 + len(c.sent)] = [20430, 1]
+            elif op == 0x59 and body[0] == 3:
+                c.decomp += 1
+                if swallow(c.decomp):
+                    return
+                for i in range(body[2]):
+                    c.bag_slots.pop(int.from_bytes(body[3 + 6 * i:5 + 6 * i], "little"), None)
+        c.send = send
+        return c
+
+    def _run_gear(self, c, rounds):
+        orig_items = self.cb._items
+        self.cb._items = lambda: {20430: {"fc": 690}}
+        try:
+            return self.cb.run(c, 40045, 40, rounds, threading.Event(), 3, sleep_fn=lambda s: None,
+                               wait=0.01, gap=0, settle=0)
+        finally:
+            self.cb._items = orig_items
+
+    def test_decompose_resends_swallowed_batch(self):
+        c = self._gear_client(lambda n: n == 1)
+        r = self._run_gear(c, 1)
+        self.assertEqual((r["done"], r["broken"]), (1, 2))
+        self.assertEqual([t for t, _ in c.bag_slots.values()], [40045])
+
+    def test_decompose_failure_does_not_stop_combine(self):
+        c = self._gear_client(lambda n: n <= 3)          # lần hợp 1: cả 3 lượt bị nuốt
+        r = self._run_gear(c, 3)
+        self.assertEqual(r["done"], 3)
+        self.assertNotIn("phân giải", r["why"])
+        self.assertEqual(r["broken"], 6)                  # 2 món hụt được phân giải ở lần sau
+        self.assertEqual([t for t, _ in c.bag_slots.values()], [40045])
+
     def test_bag_remove_patch(self):
         from realm import realm_login as rl
 
