@@ -123,14 +123,18 @@ BOSS_BUFFS = {
 # Buff dich DANG giai (ENEMY_DISPEL_WORTHY_BUFF_SKILL_IDS). Buff khac: khong ton luot giai.
 # Buff PHAN DAME tren nguoi dich: Kim Chung Trao 10031 (he Dia, cat 4) + hieu ung Chung Phan 10044.
 # Danh vao la an phan dame -> giai, khong thi danh con khac, con lai toan con phan dame thi phong thu.
-REFLECT_BUFFS = frozenset((10031, 10044))
-DISPEL_WORTHY_BUFFS = frozenset((21026, 10010, 10026, 11002, 13021, 10031, 10044))   # + Nhan Gia Vo Dich, Ket Gioi, Linh Kinh, Bang Tuong, Dau Chuyen, Kim Chung Trao
+# Them moi buff phan dame theo wiki (npc_danger.REFLECT_DAMAGE: Dau Chuyen, Kinh, Van Hoa Kinh, Due Tho Kinh,
+# Hoa Ho Than, Ba Phong Long Chuong, Dang giap, Hung Do Phach Nghiep) - user 27/11: con dang phan dame thi
+# khong danh, danh con khac toi khi giai xong.
+from .npc_danger import REFLECT_DAMAGE as _REFLECT_DAMAGE
+REFLECT_BUFFS = frozenset((10031, 10044)) | _REFLECT_DAMAGE
+DISPEL_WORTHY_BUFFS = frozenset((21026, 10010, 10041, 10026, 11002, 13021, 10031, 10044)) | REFLECT_BUFFS   # + Nhan Gia Vo Dich, Ket Gioi, Linh Kinh, Bang Tuong, Dau Chuyen, Kim Chung Trao
 # Buff dich phai giai TRUOC MOI VIEC (yeu cau user 25/11): Dau Chuyen 13021 (he Phong, fight_way 4).
 TOP_PRIORITY_DISPEL = frozenset((13021,))
 # Dich dang co Ket Gioi: khong dap dame vao, cho giai truoc (DAMAGE_AVOID_ENEMY_BUFF_SKILL_IDS).
 # Dau Chuyen 13021 cung phan dame (doi 50-70% len ca phe danh) -> khong danh vao khi chua giai duoc
 # (log 27/11 21:19-21:21: giai lien 4 luot, boss buff lai, ca doi chet vi khong ai hoi mau).
-DAMAGE_AVOID_BUFFS = frozenset((10010, 13021)) | REFLECT_BUFFS
+DAMAGE_AVOID_BUFFS = frozenset((10010, 10041, 13021)) | REFLECT_BUFFS
 # Thu tu uu tien giai cho dong doi (CLEANSE_ALLY_LADDER): NV he Thuy/Dia > NV he Phong/Hoa > NV khac > Tuong.
 # Ma he: 1 Dia, 2 Thuy, 3 Hoa, 4 Phong.
 CLEANSE_ALLY_LADDER = ((1, 2), (3, 4))

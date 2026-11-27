@@ -434,6 +434,8 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
         normal = getattr(combat.config, "SKILL_NORMAL", 10000)
         if best_attack_skill(combat, skills, attack_sp(combat, state, skills, getattr(stat, "sp", 0))) == normal:
             return None
+        if not attackable(combat, state, combat._offered_targets(options, state.my_atype)):
+            return None      # con nào cũng phản dame / Kết Giới -> đi giải trước, không đứng thủ
         return attack()
 
     steps = (
@@ -529,14 +531,41 @@ def boss_sp_restore(combat, state, unit, skills, stat):
     return combat.Decision(unit, state.my_atype, low[1], int(tid), b=low[0])
 
 
-def best_attack_skill(combat, skills, sp, enemies=1):
+def avoided(state):
+    """Các ô địch đang mang buff phản dame / Kết Giới (không đánh vào cho tới khi giải xong)."""
+    if not RULES.get("avoid_barrier", True):
+        return set()
+    return sl.avoid_damage_targets(getattr(state, "status_by_kind", None) or {},
+                                   getattr(state, "enemy_rows", (0, 1)))
+
+
+def attackable(combat, state, offered):
+    """Còn con địch sống, đánh tới được mà KHÔNG mang buff phản dame / Kết Giới."""
+    avoid = avoided(state)
+    off = set(offered or ())
+    reach = getattr(combat, "_col_reachable", None)
+    for p, hp in (getattr(state, "enemy_hp", None) or {}).items():
+        if hp > 0 and (p // 10, p % 10) not in avoid and (
+                not off or reach is None or reach(p % 10, off)):
+            return True
+    return not (getattr(state, "enemy_hp", None) or {})
+
+
+def reflect_alive(combat, state):
+    """Có con địch còn sống đang phản dame / Kết Giới -> chỉ đánh skill 1 mục tiêu (skill lan sẽ trúng nó)."""
+    avoid = avoided(state)
+    return any(hp > 0 and (p // 10, p % 10) in avoid
+               for p, hp in (getattr(state, "enemy_hp", None) or {}).items())
+
+
+def best_attack_skill(combat, skills, sp, enemies=1, single=False):
     """Skill gây dame (không phải khống chế) còn đủ SP, dame cao nhất theo wiki (realm/skill_power.py).
     ``enemies`` = 1: dame lên 1 mục tiêu (skill đánh toàn đội chỉ ăn 1/3); > 1: tổng dame lên các con
     còn sống. Bằng nhau thì skill tốn SP hơn. Không có -> đánh thường."""
     cc = getattr(combat, "CC_SKILLS", frozenset())
     normal = getattr(combat.config, "SKILL_NORMAL", 10000)
     cand = [s for s in (skills or ()) if s != normal and s not in cc and combat._is_attack(s)
-            and combat._skill_cost(s) <= sp]
+            and combat._skill_cost(s) <= sp and (not single or skill_power.targets(s) <= 1)]
     if not cand:
         return normal
     order = list(skills)
@@ -572,16 +601,15 @@ def auto_attack(combat, state, unit, skills, stat, options, boss=False):
     pos = combat._lowest_hp_enemy(state, offered)
     if pos is None and hasattr(combat, "_train_target"):
         pos = combat._train_target(es, offered)
-    if boss and pos is not None and RULES.get("reflect_policy", "hold") == "hold":
-        refl = sl.reflect_targets(getattr(state, "status_by_kind", None) or {},
-                                  getattr(state, "enemy_rows", (0, 1)))
-        if (combat._row(pos), combat._col(pos)) in refl:
-            log.info("[%s] Boss TG: địch còn lại đều có Kim Chung Tráo -> %s phòng thủ chờ giải",
+    if pos is not None and RULES.get("reflect_policy", "hold") == "hold":
+        if (combat._row(pos), combat._col(pos)) in avoided(state):
+            log.info("[%s] địch còn lại đều phản dame / Kết Giới -> %s phòng thủ chờ giải",
                      state.label, "nhân vật" if unit == cfg.UNIT_CHAR else "pet")
             row = combat._hang_cua(state, unit) if hasattr(combat, "_hang_cua") else (
                 getattr(state, "char_row", 3) if unit == cfg.UNIT_CHAR else 2)
             return combat.Decision(unit, at, at, getattr(cfg, "SKILL_DEFEND", 17001), b=row)
-    enemies = 1 if boss or _danger_alive(state) else _alive_count(getattr(state, "enemy_hp", None)) or len(es)
+    single = reflect_alive(combat, state)
+    enemies = 1 if boss or single or _danger_alive(state) else _alive_count(getattr(state, "enemy_hp", None)) or len(es)
     sp = getattr(stat, "sp", 0)
     # như ts_bot (quest): unit có skill hồi sinh / hồi máu giữ SP cho vai trò hồi, SP thấp thì đánh thường
     if (not boss and hasattr(combat, "_has_support_skill") and combat._has_support_skill(skills or ())
@@ -589,7 +617,7 @@ def auto_attack(combat, state, unit, skills, stat, options, boss=False):
         sp = 0
     if not boss:
         sp = attack_sp(combat, state, skills, sp)
-    sk = best_attack_skill(combat, skills, sp, enemies)
+    sk = best_attack_skill(combat, skills, sp, enemies, single=single)
     if enemies > 1 and skill_power.targets(sk) > 1 and hasattr(combat, "_train_target"):
         center = combat._train_target(es, offered)
         if center is not None:

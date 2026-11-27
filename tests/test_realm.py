@@ -2434,3 +2434,57 @@ class Npc40WinByFloorTest(unittest.TestCase):
                                   max_consec_losses=3, sleep_fn=lambda s: None, npc40=FakeNpc40Mod,
                                   floor_fn=lambda: next(floors))
         self.assertNotIn("liên tiếp", why)       # trận 1 lên tầng 37 = thắng -> chỉ thua 2 liền
+
+
+class ReflectAvoidTest(unittest.TestCase):
+    """User 27/11: con đang phản dame thì không đánh, đánh con khác; được giải rồi mới đánh vào."""
+
+    def setUp(self):
+        from realm import party_pets
+        self.pp = party_pets
+        fresh_rules()
+        cr._claims.clear()
+        self.comb = fake_combat()
+        self.comb._skill_cost = lambda s: 20
+        self.comb._is_attack = lambda s: s in (13010, 13013)
+        self.comb.CC_SKILLS = frozenset()
+        self.comb.config.SKILL_NORMAL = 10000
+        cr.install(self.comb)
+
+    def client(self, sbk, hp):
+        st = fake_state(status_by_kind=sbk, enemy_hp=hp, label="a", party_idx=None, realm_mode="npc40")
+        return NS(state=st, pet_usable_skills=lambda pid: [13010, 13013])
+
+    def test_all_reflect_types_avoided(self):
+        for buff in (13021, 10015, 10038, 10031, 12024):
+            self.assertIn((0, 2), sl.avoid_damage_targets({(0, 2): {"b": buff}}, (0, 1)), buff)
+            self.assertIn(buff, sl.DISPEL_WORTHY_BUFFS)
+
+    def test_general_hits_other_npc_with_single_skill(self):
+        c = self.client({(0, 3): {"b": 10015}}, {2: 900, 3: 100})          # ô 3 có Kính
+        d = self.pp.decide(c, self.comb, 2, 0, NS(role_id=b"\x01\x02" + b"\0" * 6, sp=500))
+        self.assertEqual((d.b, d.target, d.skill), (0, 2, 13010))           # đánh ô 2, không dùng Loạn Kích
+
+    def test_general_defends_when_all_reflect(self):
+        c = self.client({(0, 2): {"b": 13021}, (0, 3): {"b": 10031}}, {2: 900, 3: 100})
+        d = self.pp.decide(c, self.comb, 2, 0, NS(role_id=b"\x01\x02" + b"\0" * 6, sp=500))
+        self.assertEqual(d.skill, 17001)
+
+    def test_after_dispel_attack_again(self):
+        c = self.client({}, {2: 900, 3: 100})
+        d = self.pp.decide(c, self.comb, 2, 0, NS(role_id=b"\x01\x02" + b"\0" * 6, sp=500))
+        self.assertEqual(d.target, 3)                                        # hết buff: đánh con ít máu
+
+
+class CharReflectTest(unittest.TestCase):
+    def setUp(self):
+        TsmDecideTest.setUp(self)
+
+    st = TsmDecideTest.st
+
+    def test_char_dispels_instead_of_damage_when_all_reflect(self):
+        st = self.st(skills_char=[13010, 11012], enemy_slots=[2], enemy_hp={2: 500},
+                     status_by_kind={(0, 2): {"b": 10015}}, char=NS(sp=600, hp=900, hp_max=1000),
+                     allies={(3, 2): NS(hp=900, hp_max=1000)})
+        d = self.cb.decide_char(st, [(1, 2)])
+        self.assertEqual(getattr(d, "skill", d), 11012)                  # giải Kính chứ không đánh / thủ

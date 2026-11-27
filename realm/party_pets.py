@@ -141,12 +141,20 @@ def decide(client, combat, row, col, unit, skill_pref=None):
                 d = None
             if d is not None:
                 return d
+    # Con đang phản dame / Kết Giới: không đánh vào (kể cả bằng skill lan), đánh con khác tới khi được
+    # giải; con nào cũng phản dame thì phòng thủ chờ (user 27/11).
+    if not combat_rules.attackable(combat, st, cols):
+        if combat_rules.RULES.get("reflect_policy", "hold") == "hold":
+            return combat.Decision(row, col, col, getattr(combat.config, "SKILL_DEFEND", 17001), b=row)
+    single = combat_rules.reflect_alive(combat, st)
     sk = None
-    if skill_pref and skill_pref in skills and combat._skill_cost(skill_pref) <= sp:
+    if (skill_pref and skill_pref in skills and combat._skill_cost(skill_pref) <= sp
+            and not (single and combat_rules.skill_power.targets(skill_pref) > 1)):
         sk = skill_pref
     if sk is None:
         n = len(enemy)
-        sk = combat_rules.best_attack_skill(combat, skills, sp, 1 if combat_rules._danger_alive(st) else n)
+        sk = combat_rules.best_attack_skill(combat, skills, sp,
+                                            1 if single or combat_rules._danger_alive(st) else n, single=single)
     pos = combat._lowest_hp_enemy(st, cols)
     if pos is None:
         pos = enemy[0]
