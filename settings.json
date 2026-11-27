@@ -14,7 +14,7 @@
  "max_losses": {"npc40": 0, "nhi_kieu": 0},
  "windows": {
   "world_boss": {"start": "10:00", "end": "23:00", "utc_offset": 7},
-  "npc40": {"days": [0, 2, 4], "start": "20:00", "end": "23:00", "utc_offset": 7},
+  "npc40": {"days": [0, 2, 4], "start": "12:00", "end": "23:00", "utc_offset": 7},
   "nhi_kieu": {"days": [6], "start": "08:00", "end": "23:00", "utc_offset": 7}
  }
 }

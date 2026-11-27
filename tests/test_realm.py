@@ -271,7 +271,8 @@ class WindowTest(unittest.TestCase):
         mon_13 = datetime.datetime(2026, 11, 23, 13, 0)   # thứ Hai
         tue_13 = datetime.datetime(2026, 11, 24, 13, 0)
         sun_9 = datetime.datetime(2026, 11, 29, 9, 0)
-        self.assertFalse(features.in_window(w["npc40"], mon_13))   # 40 NPC mở 20:00
+        self.assertTrue(features.in_window(w["npc40"], mon_13))    # 40 NPC mở 12:00
+        self.assertFalse(features.in_window(w["npc40"], datetime.datetime(2026, 11, 23, 11, 59)))
         self.assertTrue(features.in_window(w["npc40"], datetime.datetime(2026, 11, 23, 20, 30)))
         self.assertFalse(features.in_window(w["npc40"], tue_13))
         self.assertTrue(features.in_window(w["nhi_kieu"], sun_9))

@@ -147,7 +147,7 @@ class AccountPanel extends ScrollView {
         cNk = Ui.check(c, "Nhị Kiều (2k)  (Chủ nhật 08:00–23:00)", false);
         LinearLayout nkOpts = indent(c);
         loNk = new LoadoutBox(c, nkOpts, "Đội hình Nhị Kiều", "lo_nk_");
-        cNpc = Ui.check(c, "40 NPC  (T2/T4/T6 20:00–23:00)", false);
+        cNpc = Ui.check(c, "40 NPC  (T2/T4/T6 12:00–23:00)", false);
         LinearLayout npcOpts = indent(c);
         npcLosses = Ui.number(c, "0 = thua thì hồi máu/mana rồi đánh tiếp", "0");
         npcOpts.addView(label(c, "Thua liên tiếp mấy trận thì dừng (0 = không dừng, hồi rồi đánh tiếp)"));

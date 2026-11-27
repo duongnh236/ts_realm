@@ -2,7 +2,7 @@
 
 Giờ mở lấy theo APK TS Manager (giờ server UTC+7, sửa được trong settings.json):
   * Boss Thế Giới 10:00–23:00: 5 lượt free, rồi dùng vé trong túi tới khi đủ dame / hết vé.
-  * 40 NPC: T2/T4/T6 20:00–23:00. Thua thì hồi đầy máu/mana rồi đánh tiếp tới hết giờ hoặc qua đủ
+  * 40 NPC: T2/T4/T6 12:00–23:00. Thua thì hồi đầy máu/mana rồi đánh tiếp tới hết giờ hoặc qua đủ
     40 tầng (``max_losses.npc40`` > 0 thì thua chừng ấy trận liên tiếp mới dừng). Xong thì ghi
     ``client._npc40_summary`` để app báo "đi đổi thưởng".
   * Nhị Kiều: Chủ nhật 08:00–23:00. Leo tháp 12922 -> 12959; thua thì hồi đầy rồi leo tiếp từ tầng
@@ -22,7 +22,7 @@ log = logging.getLogger("bot")
 
 DEFAULT_WINDOWS = {
     "world_boss": {"start": "10:00", "end": "23:00"},
-    "npc40": {"days": [0, 2, 4], "start": "20:00", "end": "23:00"},
+    "npc40": {"days": [0, 2, 4], "start": "12:00", "end": "23:00"},
     "nhi_kieu": {"days": [6], "start": "08:00", "end": "23:00"},
 }
 
