@@ -1505,7 +1505,9 @@ def _realm_pet_list(pets):
         head[32 + len(nm):35 + len(nm)] = b"\x0a\x0a\x0a"
         things = bytearray(6 * 56)
         for fit, tid in eq.items():
+            tid, lv = tid if isinstance(tid, tuple) else (tid, 1)
             things[(fit - 1) * 56:(fit - 1) * 56 + 2] = tid.to_bytes(2, "little")
+            things[(fit - 1) * 56 + 18] = lv
         body += head + things + bytes(9)
     body = bytes(body[:2]) + bytes(body[3:])   # bỏ byte đệm: [sub 2B][n 1B]
     return b"\xc0\x91" + (7 + len(body)).to_bytes(2, "little") + b"\x00\x00\x0f" + body
@@ -1518,7 +1520,7 @@ class WeaponSkillTest(unittest.TestCase):
         from realm import weapon_skills as ws
         self.ws = ws
         self._saved = (dict(ws.WEAPON_SKILLS), dict(ws.SKILLS))
-        ws.WEAPON_SKILLS[64515] = (self.EX,)
+        ws.WEAPON_SKILLS[64515] = ((1, self.EX),)
         ws.SKILLS[self.EX] = {"name": "Chấn Điện EX", "cost": 90, "cat": 1, "splash": 4}
 
     def tearDown(self):
@@ -1545,8 +1547,8 @@ class WeaponSkillTest(unittest.TestCase):
         return Cli, seen
 
     def test_parse_weapons_from_realm_pet_list(self):
-        pkt = _realm_pet_list([(0xb0a5, "", {1: 20120, 3: 64515}), (0xb085, "Tào", {3: 64508})])
-        self.assertEqual(self.ws.pet_weapons(pkt), {0xb0a5: 64515, 0xb085: 64508})
+        pkt = _realm_pet_list([(0xb0a5, "", {1: 20120, 3: 64515}), (0xb085, "Tào", {3: 11111})])
+        self.assertEqual(self.ws.pet_weapons(pkt), {0xb0a5: (64515, 1), 0xb085: (11111, 1)})
         from realm import realm_login
         self.assertIsNotNone(realm_login.pet_list_to_vn(pkt))   # cùng khuôn bản vá danh sách pet
         self.assertEqual(self.ws.pet_weapons(pkt[:-5]), {})
@@ -1555,9 +1557,26 @@ class WeaponSkillTest(unittest.TestCase):
         Cli, seen = self._client_cls()
         c = Cli()
         self.assertEqual(c.pet_usable_skills(0xb0a5), [13009, 13013, 13024])    # chưa biết vũ khí
-        c._dispatch(0x0F, _realm_pet_list([(0xb0a5, "", {3: 64515}), (0xb085, "", {3: 64508})]))
+        c._dispatch(0x0F, _realm_pet_list([(0xb0a5, "", {3: 64515}), (0xb085, "", {3: 11111})]))
         self.assertEqual(seen[-1], [13009, 13013, 13024, self.EX])
         self.assertEqual(c.pet_usable_skills(0xb085), [12013, 12014, 12021])    # vũ khí chưa có trong bảng
+        c._dispatch(0x0F, _realm_pet_list([(0xb0a5, "", {3: (64515, 0)})]))
+        self.assertEqual(seen[-1], [13009, 13013, 13024])                      # vũ khí cấp 0: chưa có skill
+
+    def test_real_table(self):
+        self._saved[0][64515]                                                  # bảng thật có Long Đảm Thương
+        self.assertEqual(self.ws.WEAPON_SKILLS.get(64502), ((7, 22032),))
+        self.ws.WEAPON_SKILLS.clear()
+        self.ws.WEAPON_SKILLS.update(self._saved[0])
+        self.ws.SKILLS.clear()
+        self.ws.SKILLS.update(self._saved[1])
+        self.assertEqual(self.ws.weapon_skills(64515, 1), [13043])              # Cường Chấn Điện (Chấn Điện EX)
+        self.assertEqual(self.ws.weapon_skills(64502, 6), [])
+        self.assertEqual(self.ws.weapon_skills(64502, 7), [22032])
+        self.assertEqual(self.ws.SKILLS[13043]["cost"], 72)
+        for steps in self.ws.WEAPON_SKILLS.values():
+            for _, sid in steps:
+                self.assertIn(sid, self.ws.SKILLS)
 
     def test_fallback_to_ts_bot_equipment_table(self):
         Cli, _ = self._client_cls()
