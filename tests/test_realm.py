@@ -735,9 +735,10 @@ class CombineTest(unittest.TestCase):
 
     def test_stops_when_server_refuses(self):
         c = FakeBagClient({66: [40045, 9108]}, refuse_after=1)
-        r = self.run_it(c)
+        r = self.cb.run(c, 40045, 40, 0, threading.Event(), 3, sleep_fn=lambda s: None, wait=0.01, gap=0,
+                        max_refused=3)
         self.assertEqual(r["done"], 1)
-        self.assertEqual(len(c.sent), 1 + self.cb.MAX_REFUSED)       # thử lại rồi mới dừng
+        self.assertEqual(len(c.sent), 1 + 3)                          # thử lại rồi mới dừng
         self.assertIn("từ chối", r["why"])
         self.assertIn("ô trống", r["why"])
 
@@ -771,10 +772,18 @@ class CombineTest(unittest.TestCase):
         c = FakeBagClient({66: [40045, 9108], 1: [1, 1]})
         c.realm_bag_cap = 210
         self._notify(c, ["Không hợp thành được lần này. Chưa mất gì."] * 5)
-        r = self.run_it(c)
+        r = self.cb.run(c, 40045, 40, 0, threading.Event(), 3, sleep_fn=lambda s: None, wait=0.01, gap=0,
+                        max_refused=5)
         self.assertEqual(r["done"], 0)
         self.assertNotIn("đầy", r["why"])
         self.assertIn("208/210", r["why"])
+
+    def test_refused_keeps_going_by_default(self):
+        c = FakeBagClient({66: [40045, 9108]})
+        self._notify(c, ["Không hợp thành được lần này. Chưa mất gì."] * 10
+                     + ["Hợp thành hàng loạt 20/20 lần: x - phí 1780 Đồng"])
+        r = self.run_it(c, rounds=1)
+        self.assertEqual((r["done"], len(c.sent)), (1, 11))
 
     def test_real_bag_full(self):
         c = FakeBagClient({k: [1, 1] for k in range(1, 210)})

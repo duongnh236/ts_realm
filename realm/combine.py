@@ -26,8 +26,9 @@ MAX_SLOTS = 3
 RESTRICT_NOT_COMBINE_MATERIAL = 4      # bit "không dùng làm nguyên liệu hợp" trong items_gamedata
 WAIT_RESULT = 6.0                      # chờ server trừ nguyên liệu sau mỗi lần hợp
 GAP = 1.2                              # nghỉ giữa hai lần hợp
-MAX_REFUSED = 3                        # server từ chối ("Không hợp thành được lần này") bao nhiêu lần liền thì dừng
+MAX_REFUSED = 0                        # server từ chối bao nhiêu lần liền thì dừng (0 = không bao giờ, cứ thử tiếp)
 RETRY_WAIT = 3.0                       # nghỉ trước khi thử lại sau một lần bị từ chối
+RETRY_WAIT_MAX = 10.0                  # bị từ chối liên tục thì giãn dần tới mức này
 DECOMPOSE_BATCH = 8                    # client gốc phân giải tối đa 8 ô một lượt
 SETTLE = 0.8                           # chờ server bỏ hết đồ hợp ra vào túi
 
@@ -244,13 +245,14 @@ def classify(texts):
 
 def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
         sleep_fn=time.sleep, now=time.time, wait=WAIT_RESULT, gap=GAP, auto_decompose=True,
-        settle=SETTLE, keep_bonus=27, keep_level=0, retry_wait=RETRY_WAIT):
-    """Hợp tới khi đủ ``rounds`` lần (0 = tới khi hết nguyên liệu), bấm dừng, túi đầy, thiếu Đồng,
-    hoặc server từ chối ``MAX_REFUSED`` lần liền.
+        settle=SETTLE, keep_bonus=27, keep_level=0, retry_wait=RETRY_WAIT,
+        max_refused=MAX_REFUSED):
+    """Hợp tới khi đủ ``rounds`` lần (0 = tới khi hết nguyên liệu), bấm dừng, túi đầy hoặc thiếu Đồng.
+    Server từ chối thì cứ thử lại mãi (``max_refused`` > 0 mới giới hạn).
 
     Thành công = server báo "Hợp thành hàng loạt x/y" hoặc trừ nguyên liệu. Thất bại trong lô thì
     server hoàn nguyên liệu nên số trừ ít hơn, vẫn tính là xong. "Không hợp thành được lần này. Chưa
-    mất gì." (log 27/11, túi còn 11–16 ô trống) là server bỏ qua cả lô -> chờ rồi thử lại; chỉ coi
+    mất gì." (log 27/11, túi còn 11–16 ô trống) là server bỏ qua cả lô -> chờ rồi thử lại (không giới hạn); chỉ coi
     là túi đầy khi đếm ô thật sự hết chỗ."""
     lbl = getattr(client, "_label", "?")
     tid, qty, rounds, n_slots = int(tid), int(qty), int(rounds), int(n_slots)
@@ -312,12 +314,12 @@ def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
                 break
             refused += 1
             said = info if kind == "refused" else "không phản hồi"
-            if refused >= MAX_REFUSED:
+            if max_refused and refused >= max_refused:
                 why = "server từ chối %d lần liền (%s) — túi còn %d/%d ô trống" % (refused, said, free, cap)
                 break
-            log.info("[%s] Server chưa hợp (%s), túi còn %d/%d ô trống -> thử lại (%d/%d)", lbl, said,
-                     free, cap, refused, MAX_REFUSED)
-            sleep_fn(retry_wait)
+            log.info("[%s] Server chưa hợp (%s), túi còn %d/%d ô trống -> thử lại (lần %d)", lbl, said,
+                     free, cap, refused)
+            sleep_fn(min(RETRY_WAIT_MAX, retry_wait * min(refused, 3)))
             continue
         refused = 0
         if info and info.get("fee"):
