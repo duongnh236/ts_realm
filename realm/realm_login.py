@@ -72,6 +72,7 @@ def install(client_module) -> None:
         patch_turn_order(cls)
         patch_world_boss_totals(cls)
         patch_pet_list(cls)
+    patch_potion_data(client_module)
     try:
         import importlib
         bt = importlib.import_module(client_module.__name__.rsplit(".", 1)[0] + ".battle_tracker")
@@ -79,6 +80,60 @@ def install(client_module) -> None:
     except (ImportError, AttributeError, ValueError):
         pass
     client_module._realm_auth_installed = True
+
+
+POTION_KINDS = (17, 18)              # kd 17 = đồ ăn/rượu, 18 = thuốc
+ATTR_HP, ATTR_SP = 25, 26            # a1k của items_gamedata.json
+
+
+def potion_heal(raw: dict):
+    """(hp, sp) hồi của 1 món theo a1k/a1v trong items_gamedata.json, không phải thuốc thì None.
+
+    Lượng hồi = a1v - 100 (Cam Thảo a1v 110 -> 10 HP, đúng cột hp sẵn có). Capture 27/11: Thuốc
+    Hoàng Cân 0x6a12 (a1k 26, a1v 265) hồi +165 SP. File dữ liệu bỏ trống cột hp/sp của 22 món
+    thuốc loại này (Thuốc Hoàng Cân, Viên Côn Lôn...) nên ts_bot coi là "hết thuốc"."""
+    if not isinstance(raw, dict) or raw.get("kd") not in POTION_KINDS or raw.get("battle"):
+        return None
+    if int(raw.get("bs", 0) or 0):
+        return None                      # nút Sử dụng bị khoá
+    heal = int(raw.get("a1v", 0) or 0) - 100
+    if heal <= 0:
+        return None
+    if raw.get("a1k") == ATTR_HP:
+        return heal, 0
+    if raw.get("a1k") == ATTR_SP:
+        return 0, heal
+    return None
+
+
+def patch_potion_data(client_module) -> None:
+    """Điền hp/sp còn thiếu cho thuốc trong từ điển gamedata của ts_bot (xem ``potion_heal``)."""
+    orig = getattr(client_module, "_load_gamedata_items", None)
+    if orig is None or getattr(orig, "_realm_potions", False):
+        return
+    loader = getattr(client_module, "_load_json_data_file", None)
+
+    def _load_gamedata_items():
+        items = orig()
+        if getattr(client_module, "_realm_potions_filled", None) is items:
+            return items
+        raw = loader("items_gamedata.json") if loader else None
+        for k, v in (raw or {}).items():
+            try:
+                iid = int(k, 16) if isinstance(k, str) and k.lower().startswith("0x") else int(k)
+            except ValueError:
+                continue
+            cur = items.get(iid)
+            if cur is None or cur.get("hp") or cur.get("sp"):
+                continue
+            heal = potion_heal(v)
+            if heal:
+                cur["hp"], cur["sp"] = heal
+        client_module._realm_potions_filled = items
+        return items
+
+    _load_gamedata_items._realm_potions = True
+    client_module._load_gamedata_items = _load_gamedata_items
 
 
 def self_entity_from_login_reply(pkt: bytes):

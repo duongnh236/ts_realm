@@ -1192,6 +1192,32 @@ class RealmLoginPacketTest(unittest.TestCase):
         self.assertTrue(realm_login.is_realm_server("ts_realm"))
         self.assertFalse(realm_login.is_realm_server("trieu_van"))
 
+    def test_potion_data_filled(self):
+        """Thuốc Hoàng Cân / Viên Côn Lôn thiếu cột sp/hp -> bot báo 'HET thuoc' dù túi có 5890 lọ."""
+        import types
+        from realm import realm_login
+        raw = {
+            "0x6a12": {"name": "Thuốc Hoàng Cân", "kd": 18, "a1k": 26, "a1v": 265},
+            "0x6a14": {"name": "Viên Côn Lôn", "kd": 18, "a1k": 25, "a1v": 265},
+            "0x6979": {"name": "Cam Thảo", "hp": 10, "sp": 0, "kd": 18, "a1k": 25, "a1v": 110},
+            "0x6645": {"name": "Rượu Linh Chi", "kd": 17, "bs": 254, "a1k": 26, "a1v": 241},
+            "0x6648": {"name": "Rượu Cung Quy", "kd": 17, "a1k": 26, "a1v": 100},
+            "0x5b0f": {"name": "Nước Mắt A Thập", "kd": 14, "a1v": 100},
+        }
+        mod = types.ModuleType("fake_client")
+        cache = {int(k, 16): {"name": v["name"], "hp": v.get("hp", 0), "sp": v.get("sp", 0)}
+                 for k, v in raw.items()}
+        mod._load_gamedata_items = lambda: cache
+        mod._load_json_data_file = lambda name: raw
+        realm_login.patch_potion_data(mod)
+        realm_login.patch_potion_data(mod)          # gọi lại không bọc 2 lần
+        items = mod._load_gamedata_items()
+        self.assertEqual((items[0x6a12]["hp"], items[0x6a12]["sp"]), (0, 165))
+        self.assertEqual((items[0x6a14]["hp"], items[0x6a14]["sp"]), (165, 0))
+        self.assertEqual(items[0x6979]["hp"], 10)
+        for tid in (0x6645, 0x6648, 0x5b0f):
+            self.assertEqual((items[tid]["hp"], items[tid]["sp"]), (0, 0))
+
 
 class RealmSelfEntityTest(unittest.TestCase):
     def test_login_reply_feeds_0x69(self):
