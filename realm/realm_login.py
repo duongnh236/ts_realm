@@ -78,6 +78,8 @@ def install(client_module) -> None:
     weapon_skills.install(client_module)   # sau patch_pet_list: phải đọc vũ khí trước khi cắt ThingData
     from . import pet_order
     pet_order.install(client_module)       # thứ tự võ tướng (xếp võ tướng xuất chiến khi party)
+    from . import party_pets
+    party_pets.install(client_module)      # ra lệnh cho võ tướng phụ của mình (party: không thì chờ 90s/lượt)
     try:
         import importlib
         bt = importlib.import_module(client_module.__name__.rsplit(".", 1)[0] + ".battle_tracker")

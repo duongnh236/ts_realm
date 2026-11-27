@@ -2207,3 +2207,45 @@ class PetOrderTest(unittest.TestCase):
         self.assertEqual(c._realm_pet_slots, [(1, 0x2eef), (2, 0x3715), (3, 0x2ee2)])
         c.state.in_battle = True
         self.assertFalse(po.arrange(c, [0x2ee2]))                            # trong trận: không đổi
+
+
+class PartyPetsTest(unittest.TestCase):
+    """realm/party_pets.py: chỉ ra lệnh cho võ tướng phụ có master_id là mình."""
+
+    def _client(self):
+        me, other = b"M" * 8, b"O" * 8
+        U = lambda pid, owner, kind=4, hp=100, sp=500: NS(role_id=pid.to_bytes(2, "little") + b"\0" * 6,
+                                                         master_id=owner, role_kind=kind, hp=hp, alive=hp > 0, sp=sp)
+        units = {(3, 2): U(0, me, kind=1), (2, 2): U(0xb170, me), (2, 0): U(0x2eef, me), (2, 4): U(0x2ee2, me, hp=0),
+                 (3, 0): U(0x1111, other), (3, 1): U(0, other, kind=1), (0, 2): U(0x9999, b"\0" * 8, kind=3)}
+        st = NS(my_atype=2, char_row=3, ally_rows=(2, 3), enemy_rows=(0, 1), enemy_hp={2: 900, 3: 100},
+                support_combat=True, status_by_kind={})
+        sent = []
+        c = NS(self_entity=me, state=st, battle_tracker=NS(active=True, units=units, generation=1, turn=1),
+               auto_combat=True, _label="a", pet_usable_skills=lambda pid: [13010, 13013],
+               _is_current_combat_turn=lambda k: True, _combat_turn_key=lambda: (1, 1),
+               _send_combat=lambda d, expected_key=None: sent.append(d))
+        return c, sent
+
+    def test_only_own_alive_extras(self):
+        from realm import party_pets as pp
+        c, _ = self._client()
+        self.assertEqual([(r, cl) for r, cl, _u in pp.own_extra_units(c)], [(2, 0)])
+
+    def test_send_extras(self):
+        from realm import party_pets as pp
+        c, sent = self._client()
+        cost = {13010: 40, 13013: 49}
+        comb = NS(Decision=_Dec, _skill_cost=lambda s: cost.get(s, 0), _is_attack=lambda s: True,
+                  CC_SKILLS=frozenset(), config=NS(SKILL_NORMAL=10000), _hang_cua=lambda st, u: u,
+                  _lowest_hp_enemy=lambda st, off: 3)
+        import sys as _s
+        with mock_module("train_bot", NS(combat=comb)), mock_module("train_bot.combat", comb):
+            pp._send_extras(c, (1, 1))
+            pp._send_extras(c, (1, 1))                       # cùng lượt: không gửi lại
+        self.assertEqual([(d.unit, d.atype, d.b, d.target, d.skill) for d in sent], [(2, 0, 0, 3, 13013)])   # 2 con: Loạn kích (3 mục tiêu) tổng dame cao hơn
+
+
+def mock_module(name, obj):
+    from unittest import mock
+    return mock.patch.dict(sys.modules, {name: obj})
