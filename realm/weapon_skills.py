@@ -1,4 +1,4 @@
-"""Skill của vũ khí chuyên dụng (VKCD / Thần Khí) cho pet.
+"""Skill thêm của pet: vũ khí chuyên dụng (VKCD / Thần Khí) và Linh Hồn đang mang.
 
 Pet cầm đúng Thần Khí của mình (ô trang bị 3, kind 87, ví dụ Triệu Vân + Long Đảm Thương) thì có
 thêm skill (ví dụ "Chấn Điện EX"). Server TS Realm không gửi danh sách skill của pet, còn dữ liệu
@@ -16,10 +16,15 @@ Module này:
 Bảng sinh từ dữ liệu game TS Realm (IOS_ExclusiveWeapon_C.dat: vũ khí + cấp -> skill), chạy lại
 scripts/gen_weapon_skills.py khi game cập nhật. Cấp vũ khí = ThingData +18 (enhanceLv); cấp 0 chưa
 có skill.
+
+Linh Hồn: server gửi S:120-008 (danh sách Linh Hồn của nhân vật) lúc đăng nhập, mỗi Linh Hồn ghi đang
+gắn cho pet nào và 1..4 skill (vd Triệu Vân mang Linh hồn Trương Giác: Vô Hình + Phong Thần). Các skill
+đó là skill thường đã có trong skills_data.json nên chỉ cần thêm vào danh sách skill của pet.
 """
 from __future__ import annotations
 
 import logging
+import re
 
 log = logging.getLogger("bot")
 
@@ -95,6 +100,118 @@ WEAPON_SKILLS: dict = {
     64614: ((1, 46005),),
 }
 
+# vũ khí -> võ tướng chủ (mã bản gốc rb0, cột +86 của Item_C). Pet khác cầm thì không có skill
+# ("chỉ có Triệu Vân mới phát huy được toàn bộ sức mạnh"). So theo tên trong pets.json, bỏ " rbN".
+WEAPON_OWNER: dict = {
+    64501: 10001,
+    64502: 10002,
+    64503: 13014,
+    64504: 12022,
+    64505: 11010,
+    64506: 13009,
+    64507: 14101,
+    64508: 11047,
+    64509: 12033,
+    64510: 11063,
+    64511: 12094,
+    64512: 12017,
+    64513: 14009,
+    64514: 12020,
+    64515: 12027,
+    64516: 13002,
+    64517: 11248,
+    64518: 11144,
+    64519: 14490,
+    64520: 14583,
+    64521: 13019,
+    64522: 14503,
+    64523: 14054,
+    64524: 11031,
+    64525: 11091,
+    64526: 13021,
+    64527: 11053,
+    64528: 12041,
+    64529: 12012,
+    64530: 12001,
+    64531: 27039,
+    64532: 13037,
+    64533: 13036,
+    64534: 13038,
+    64535: 14200,
+    64536: 11074,
+    64537: 14597,
+    64538: 14520,
+    64539: 14096,
+    64540: 12043,
+    64541: 14409,
+    64542: 15277,
+    64543: 11020,
+    64544: 11034,
+    64545: 11045,
+    64547: 11024,
+    64548: 11050,
+    64549: 11021,
+    64550: 11026,
+    64553: 12066,
+    64554: 12042,
+    64555: 12059,
+    64556: 12015,
+    64557: 13005,
+    64558: 13008,
+    64559: 13003,
+    64560: 13016,
+    64561: 13012,
+    64562: 10001,
+    64563: 10232,
+    64564: 10002,
+    64565: 10003,
+    64566: 14066,
+    64567: 14489,
+    64568: 14487,
+    64570: 14024,
+    64571: 14488,
+    64572: 14366,
+    64573: 15493,
+    64574: 41550,
+    64575: 15478,
+    64576: 15479,
+    64577: 45437,
+    64578: 15495,
+    64579: 15494,
+    64580: 15496,
+    64581: 11249,
+    64582: 12179,
+    64583: 14747,
+    64587: 14748,
+    64588: 22113,
+    64589: 12219,
+    64590: 22114,
+    64591: 11252,
+    64592: 45511,
+    64593: 22117,
+    64594: 14749,
+    64595: 45510,
+    64596: 22119,
+    64597: 22118,
+    64598: 45513,
+    64599: 45516,
+    64600: 11251,
+    64601: 13170,
+    64602: 11253,
+    64603: 45514,
+    64604: 27217,
+    64605: 27214,
+    64606: 27218,
+    64607: 27219,
+    64608: 45520,
+    64609: 12220,
+    64610: 45523,
+    64611: 14750,
+    64612: 45525,
+    64613: 11254,
+    64614: 45526,
+}
+
 # mã skill -> dữ liệu như skills_data.json, lấy từ Skill_C của TS Realm (cat 1/2/3 = đánh, 4/9/19 = buff)
 SKILLS: dict = {
     10039: {'name': 'Duệ Thổ Kính', 'cost': 40, 'cat': 4, 'splash': 1, 'element': 1},
@@ -144,6 +261,44 @@ SKILLS: dict = {
 }
 
 
+_CONFIG = [None]               # train_bot.config (install đặt vào)
+SOUL_REC = 53                  # S:120-008: [n u16] + n bản ghi 53 byte
+SOUL_PET, SOUL_SKILLS = 11, 40 # +11 pet đang mang (0 = chưa gắn), +40 4 x [skill u16][cấp u8]
+
+
+def pet_souls(pkt: bytes) -> dict:
+    """{mã pet: [skill...]} từ S:120-008 (frame đủ header). Bản ghi 53 byte (capture 27/11, 2 acc):
+    +0 mã riêng u16 | +2 chủ u32 | +8 mã Linh Hồn u16 | +10 phẩm | +11 pet u16 | +16 chỉ số | +40 skill."""
+    if len(pkt) < 11 or pkt[6] != 0x78 or pkt[7:9] != b"\x08\x00":
+        return None
+    b = pkt[7:]
+    n = int.from_bytes(b[2:4], "little")
+    if 4 + n * SOUL_REC > len(b):
+        return None
+    out = {}
+    for i in range(n):
+        r = b[4 + i * SOUL_REC:4 + (i + 1) * SOUL_REC]
+        pid = int.from_bytes(r[SOUL_PET:SOUL_PET + 2], "little")
+        if not pid:
+            continue
+        for k in range(4):
+            o = SOUL_SKILLS + 3 * k
+            sid = int.from_bytes(r[o:o + 2], "little")
+            if sid and sid not in out.setdefault(pid, []):
+                out[pid].append(sid)
+    return out
+
+
+def soul_skills(client, pid) -> list:
+    """Skill Linh Hồn của pet, chỉ skill bot có dữ liệu và dùng chủ động được (cat khác 0)."""
+    info = getattr(_CONFIG[0], "SKILL_INFO", None) or {}
+    out = []
+    for sid in (getattr(client, "_realm_pet_soul", None) or {}).get(pid) or ():
+        if (info.get(sid) or {}).get("cat"):
+            out.append(sid)
+    return out
+
+
 ENHANCE_LV = 18                # ThingData +18 enhanceLv (Logic_Item.lua) = cấp vũ khí chuyên dụng
 
 
@@ -175,6 +330,20 @@ def weapon_skills(weapon_id, level=None) -> list:
         if lv >= need:
             pick = sid
     return [pick] if pick else []
+
+
+def _base_name(pid):
+    name = (getattr(_CONFIG[0], "PET_NAMES", None) or {}).get(int(pid or 0)) or ""
+    return re.sub(r"\s+rb\d+$", "", name.strip())
+
+
+def owns_weapon(pid, weapon_id) -> bool:
+    """Pet ``pid`` có phải chủ của Thần Khí ``weapon_id`` không. Thiếu dữ liệu tên -> coi là có."""
+    owner = WEAPON_OWNER.get(int(weapon_id or 0))
+    if not owner:
+        return True
+    a, b = _base_name(pid), _base_name(owner)
+    return not a or not b or a == b
 
 
 def _weapon_of(client, pid):
@@ -213,7 +382,9 @@ def patch_client(cls) -> None:
         out = list(orig_usable(self, pet_id) or [])
         try:
             pid = int(pet_id)
-            for s in weapon_skills(*_weapon_of(self, pid)):
+            w, lv = _weapon_of(self, pid)
+            wsk = weapon_skills(w, lv) if owns_weapon(pid, w) else []
+            for s in wsk + soul_skills(self, pid):
                 if s not in out:
                     out.append(s)
         except Exception:
@@ -232,6 +403,20 @@ def patch_client(cls) -> None:
                     self._realm_pet_weapon.update(ws)
             except Exception:
                 pass
+        elif opcode == 0x78 and len(pkt) > 9 and pkt[7:9] == b"\x08\x00":
+            try:
+                souls = pet_souls(pkt)
+                if souls is not None:
+                    self._realm_pet_soul = souls
+                    st = getattr(self, "state", None)
+                    pid = getattr(st, "active_pet_id", None)
+                    if st is not None and pid:
+                        st.pet_skills = self.pet_usable_skills(pid)
+                    if souls:
+                        log.info("[%s] Linh Hồn: %s", getattr(self, "_label", ""),
+                                 {"0x%04x" % p: v for p, v in souls.items()})
+            except Exception:
+                pass
         return orig_dispatch(self, opcode, pkt)
 
     cls.pet_usable_skills = pet_usable_skills
@@ -243,6 +428,7 @@ def install(client_module) -> None:
     cfg = getattr(client_module, "config", None)
     if cfg is not None:
         fill_skill_info(cfg)
+        _CONFIG[0] = cfg
     cls = getattr(client_module, "GameClient", None)
     if cls is not None:
         patch_client(cls)

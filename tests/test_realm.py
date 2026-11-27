@@ -1596,6 +1596,43 @@ class WeaponSkillTest(unittest.TestCase):
         self.assertEqual(cr.best_attack_skill(comb, skills, 200), self.EX)
         self.assertEqual(cr.best_attack_skill(comb, skills, 60), 13013)          # thiếu SP cho EX
 
+    def test_weapon_only_for_its_owner(self):
+        self.ws._CONFIG[0] = NS(PET_NAMES={45221: "Triệu Vân rb2", 12027: "Triệu Vân rb0", 45414: "Lữ Bố rb2",
+                                           13038: "Tôn Thượng Hương rb0"}, SKILL_INFO={})
+        try:
+            self.assertTrue(self.ws.owns_weapon(45221, 64515))            # Long Đảm Thương: Triệu Vân
+            self.assertFalse(self.ws.owns_weapon(45414, 64534))           # Lữ Bố cầm Thần Khí Tôn Thượng Hương
+            self.assertTrue(self.ws.owns_weapon(99999, 64515))            # không biết tên -> không chặn
+        finally:
+            self.ws._CONFIG[0] = None
+
+    def test_soul_skills_from_s120_008(self):
+        def soul(pet, skills, item=59562):
+            r = bytearray(53)
+            r[0:2] = (0x10).to_bytes(2, "little")
+            r[2:6] = bytes.fromhex("d0921800")
+            r[6:8] = b"\x05\x00"
+            r[8:10] = item.to_bytes(2, "little")
+            r[11:13] = pet.to_bytes(2, "little")
+            for k, (sid, lv) in enumerate(skills):
+                r[40 + 3 * k:42 + 3 * k] = sid.to_bytes(2, "little")
+                r[42 + 3 * k] = lv
+            return bytes(r)
+        body = b"\x08\x00\x03\x00" + soul(0xb0a5, [(13025, 1), (13023, 1)]) + soul(0, [(11028, 2)]) \
+            + soul(0xb085, [(99999 & 0xffff, 1)]) + b"\x00"
+        pkt = b"\xc0\x91" + (7 + len(body)).to_bytes(2, "little") + b"\x00\x00\x78" + body
+        self.assertEqual(self.ws.pet_souls(pkt), {0xb0a5: [13025, 13023], 0xb085: [99999 & 0xffff]})
+        Cli, _ = self._client_cls()
+        c = Cli()
+        c.state.active_pet_id = 0xb0a5
+        self.ws._CONFIG[0] = NS(SKILL_INFO={13025: {"cat": 4}, 13023: {"cat": 2}})
+        try:
+            c._dispatch(0x78, pkt)
+            self.assertEqual(c.state.pet_skills, [13009, 13013, 13024, 13025, 13023])
+            self.assertEqual(c.pet_usable_skills(0xb085), [12013, 12014, 12021])   # skill lạ: bỏ qua
+        finally:
+            self.ws._CONFIG[0] = None
+
     def test_battle_view_logs_unknown_own_skill_once(self):
         from realm.battle_view import BattleView
         c = NS(battle_tracker=None, state=NS(my_atype=2), _dispatch=lambda o, p: None)

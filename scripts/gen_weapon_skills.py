@@ -3,10 +3,12 @@
 Lấy file từ điện thoại (game net.tsrealm.game):
     adb pull /storage/emulated/0/Android/data/net.tsrealm.game/files/AssetBundles/Data/IOS_ExclusiveWeapon_C.dat
     adb pull /storage/emulated/0/Android/data/net.tsrealm.game/files/AssetBundles/Data/IOS_Skill_C.dat
-rồi: python3 scripts/gen_weapon_skills.py IOS_ExclusiveWeapon_C.dat IOS_Skill_C.dat
-In ra hai bảng WEAPON_SKILLS / SKILLS để dán vào realm/weapon_skills.py.
+    adb pull /storage/emulated/0/Android/data/net.tsrealm.game/files/AssetBundles/Data/IOS_Item_C.dat
+rồi: python3 scripts/gen_weapon_skills.py IOS_ExclusiveWeapon_C.dat IOS_Skill_C.dat IOS_Item_C.dat
+In ra ba bảng WEAPON_SKILLS / WEAPON_OWNER / SKILLS để dán vào realm/weapon_skills.py.
 
 IOS_ExclusiveWeapon_C.dat: [n u32] + n bản ghi 29 byte [vũ khí u16][cấp vũ khí u8][skill u16][cấp skill u8][chỉ số...].
+IOS_Item_C.dat: mỗi món [độ dài tên u16][tên][u8][mã u16], võ tướng chủ của Thần Khí ở +86 sau mã.
 IOS_Skill_C.dat: mỗi skill [độ dài tên u16][tên UTF-16LE][u8][mã u16] rồi SP u16 @0, hệ @2, loại (cat) @9, số ô @10.
 """
 import sys
@@ -47,8 +49,30 @@ def skill_table(path):
     return out
 
 
-def main(excl_path, skill_path):
+def weapon_owners(path, weapons):
+    """{mã vũ khí: mã võ tướng chủ (bản gốc rb0)}."""
+    b = open(path, "rb").read()
+    out = {}
+    for st in range(2, len(b) - 100):
+        ln = int.from_bytes(b[st - 2:st], "little")
+        if not 2 <= ln <= 80 or ln % 2:
+            continue
+        j = st + ln + 1
+        iid = int.from_bytes(b[j:j + 2], "little")
+        if iid not in weapons or iid in out:
+            continue
+        try:
+            name = b[st:st + ln].decode("utf-16-le")
+        except UnicodeDecodeError:
+            continue
+        if name.strip() and all(c.isprintable() for c in name):
+            out[iid] = int.from_bytes(b[j + 86:j + 88], "little")
+    return out
+
+
+def main(excl_path, skill_path, item_path):
     ws, sk = exclusive_weapons(excl_path), skill_table(skill_path)
+    owners = weapon_owners(item_path, set(ws))
     used = set()
     print("WEAPON_SKILLS = {")
     for w in sorted(ws):
@@ -56,6 +80,10 @@ def main(excl_path, skill_path):
         if steps:
             used.update(s for _, s in steps)
             print("    %d: %r," % (w, steps))
+    print("}\n\nWEAPON_OWNER = {")
+    for w in sorted(ws):
+        if owners.get(w):
+            print("    %d: %d," % (w, owners[w]))
     print("}\n\nSKILLS = {")
     for s in sorted(used):
         print("    %d: %r," % (s, sk[s]))
@@ -63,4 +91,4 @@ def main(excl_path, skill_path):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    main(*sys.argv[1:4])
