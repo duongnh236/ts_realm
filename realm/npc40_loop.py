@@ -20,6 +20,28 @@ import time
 log = logging.getLogger("bot")
 
 MAX_RETRY = 3
+AFTER_END = 1.0      # giây chờ sau khi hết trận (nhận thưởng) rồi mới mở NPC lại
+
+
+def _battles(client):
+    """Số trận đã kết thúc (ts_bot tăng ``exp_stats_battles`` lúc ghi 'THONG KE TRAN')."""
+    return int(getattr(client, "exp_stats_battles", 0) or 0)
+
+
+def _wait_end(client, npc40, prompt_seq, battles, stop_event, sleep_fn, poll_interval):
+    """Chờ hết trận: "prompt" (hộp thoại đánh tiếp như ts_bot), "end" (trận đã kết thúc mà không có
+    hộp thoại - TS Realm), None = hết thời gian / dừng."""
+    for _ in range(int(getattr(npc40, "CHECK_CHO_PROMPT", 450))):
+        if not (client.running and not stop_event.is_set()):
+            return None
+        if client._npc40_prompt_seq > prompt_seq:
+            return "prompt"
+        if _battles(client) > battles and not getattr(getattr(client, "state", None), "in_battle", False):
+            return "end"
+        sleep_fn(poll_interval)
+    if client._npc40_prompt_seq > prompt_seq:
+        return "prompt"
+    return None
 
 
 def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open=lambda: True,
@@ -66,6 +88,7 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
     client.rearm_ready()
 
     prompt_seq = client._npc40_prompt_seq
+    battles = _battles(client)
     for lan in range(1, MAX_RETRY + 1):
         if npc40._open_event_battle(client, client._battle_start_seq, stop_event, sleep_fn,
                                     poll_interval, max_advances):
@@ -81,8 +104,13 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
     consec = 0
     thu_lai = 0
     while active():
-        if not npc40._wait_counter(client, "_npc40_prompt_seq", prompt_seq, stop_event, sleep_fn,
-                                   poll_interval, npc40.CHECK_CHO_PROMPT):
+        got = _wait_end(client, npc40, prompt_seq, battles, stop_event, sleep_fn, poll_interval)
+        if got == "end":
+            # TS Realm không gửi hộp thoại "đánh tiếp?" như server VN -> hết trận (S:011-000) là mở
+            # lại NPC ngay, không chờ ~3 phút rồi coi là "kẹt" (log 27/11 19:34-19:43).
+            client._npc40_last_defeated = bool(npc40._da_thua_that(client))
+            sleep_fn(AFTER_END)
+        if not got:
             if not active():
                 return "dừng"
             if npc40._da_thua_that(client):
@@ -106,6 +134,7 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
                     before_repeat()
                 except Exception as exc:
                     log.warning("[%s] 40NPC: lỗi hồi phục: %s", lbl, exc)
+            battles = _battles(client)
             npc40._open_event_battle(client, client._battle_start_seq, stop_event, sleep_fn,
                                      poll_interval, max_advances)
             continue
@@ -140,6 +169,7 @@ def run_loop(client, point, stop_event, on_loss, before_repeat=None, window_open
             except Exception as exc:
                 log.warning("[%s] 40NPC: lỗi hồi phục: %s", lbl, exc)
         ok = False
+        battles = _battles(client)
         for lan in range(1, MAX_RETRY + 1):
             ok = npc40._open_event_battle(client, client._battle_start_seq, stop_event, sleep_fn,
                                           poll_interval, max_advances)

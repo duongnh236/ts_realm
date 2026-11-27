@@ -454,6 +454,8 @@ class FakeNpc40Mod:
         client._npc40_last_defeated = r == "lose"
         if r in ("win", "lose"):
             client._npc40_prompt_seq += 1
+        if r == "end_no_prompt":                      # TS Realm: hết trận, không có hộp thoại
+            client.exp_stats_battles = getattr(client, "exp_stats_battles", 0) + 1
         return True
 
     @staticmethod
@@ -510,6 +512,12 @@ class Npc40LoopTest(unittest.TestCase):
     def test_stuck_retry_three_times(self):
         why, c, _ = self.run_loop(["win", "stuck_alive", "stuck_alive", "stuck_alive", "stuck_alive", "win"])
         self.assertIn("không vào lại được trận", why)
+
+    def test_battle_end_without_prompt_reopens_at_once(self):
+        why, c, heals = self.run_loop(["end_no_prompt", "end_no_prompt", "win"])
+        self.assertNotIn("không vào lại", why)
+        self.assertEqual(c.log.count("end_no_prompt"), 2)
+        self.assertEqual(len(heals), 3)                # mỗi trận xong là hồi rồi mở tiếp, không coi là kẹt
 
     def test_stuck_dead_counts_as_loss(self):
         why, c, _ = self.run_loop(["lose", "stuck_dead", "lose", "win"])
