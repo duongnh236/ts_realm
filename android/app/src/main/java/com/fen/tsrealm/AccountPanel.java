@@ -50,7 +50,7 @@ class AccountPanel extends ScrollView {
     private LoadoutBox loWb, loNpc, loNk;
     private CheckBox remember, rememberPw, cWb, cWbTickets, cWbBuy, cNpc, cNk, cPbDon, cPbDoi;
     private Button btnLogin, btnRun, btnStop, btnParty;
-    private TextView stateLine, charLine;
+    private TextView stateLine, charLine, partyLine, noteLine;
     private TextView wbLine, npcLine, fightLine, charRow, petRow, bossRow, recentView;
     private LinearLayout loginCard, actCard, cbCard;
     private Spinner cbItem;
@@ -90,8 +90,12 @@ class AccountPanel extends ScrollView {
         stateLine = Ui.text(c, "● Chưa đăng nhập", 16, Ui.OFF);
         stateLine.setTypeface(Typeface.DEFAULT_BOLD);
         charLine = Ui.text(c, "", 13, Ui.DIM);
+        partyLine = Ui.text(c, "", 13, Ui.ACCENT);
+        noteLine = Ui.text(c, "", 12, Ui.DIM);
         head.addView(stateLine);
         head.addView(charLine);
+        head.addView(partyLine);
+        head.addView(noteLine);
         root.addView(head);
 
         // đăng nhập
@@ -637,10 +641,6 @@ class AccountPanel extends ScrollView {
 
     private void onPartyClick() {
         JSONArray feats = buildFeats(true);
-        if (feats.length() == 0) {
-            toast("Tick 40 NPC hoặc Nhị Kiều trước");
-            return;
-        }
         if (!"online".equals(state)) {
             toast("Tab này chưa đăng nhập hoặc đang chạy");
             return;
@@ -667,12 +667,26 @@ class AccountPanel extends ScrollView {
                     .setTitle("Chọn thành viên party")
                     .setMultiChoiceItems(names.toArray(new String[0]), pick, (d, w, on) -> pick[w] = on)
                     .setPositiveButton("Chạy", (d, w) -> startParty(feats, ids, pick))
+                    .setNeutralButton("Chỉ lập party", (d, w) -> formParty(ids, pick))
                     .setNegativeButton("Huỷ", null)
                     .show();
         }, "party_status");
     }
 
+    private void formParty(List<String> ids, boolean[] pick) {
+        JSONArray mem = new JSONArray();
+        for (int i = 0; i < ids.size(); i++) if (pick[i]) mem.put(ids.get(i));
+        if (mem.length() == 0) { toast("Chưa chọn thành viên"); return; }
+        toast("Đang mời vào đội — các tab phải đứng cùng map với đội trưởng");
+        Py.call(r -> { if (!r.optBoolean("ok")) toast(r.optString("error")); poll(); },
+                "form_party", tab, mem.toString());
+    }
+
     private void startParty(JSONArray feats, List<String> ids, boolean[] pick) {
+        if (feats.length() == 0) {
+            toast("Tick 40 NPC hoặc Nhị Kiều trước (hoặc bấm 'Chỉ lập party')");
+            return;
+        }
         JSONArray mem = new JSONArray();
         JSONObject opts = buildOpts();
         JSONObject per = new JSONObject();
@@ -728,6 +742,20 @@ class AccountPanel extends ScrollView {
         JSONArray boss = s.optJSONArray("boss");
         if (boss != null && !boss.isNull(0)) sb.append("   ·   Boss TG ").append(boss.opt(0)).append("/").append(boss.opt(1));
         charLine.setText(sb.toString());
+        JSONObject pt = s.optJSONObject("party");
+        if (pt == null) {
+            partyLine.setText(ch.isEmpty() ? "" : "Party: chưa vào đội");
+        } else {
+            JSONArray nm = pt.optJSONArray("names");
+            StringBuilder ps = new StringBuilder("Party ").append(pt.optInt("size")).append(" người");
+            ps.append(pt.optBoolean("is_leader") ? " (mình là đội trưởng)" : " · đội trưởng " + pt.optString("leader"));
+            if (nm != null && nm.length() > 0) {
+                ps.append(": ");
+                for (int i = 0; i < nm.length(); i++) ps.append(i > 0 ? ", " : "").append(nm.optString(i));
+            }
+            partyLine.setText(ps.toString());
+        }
+        noteLine.setText(s.optString("note", ""));
         applyBattle(s.optJSONObject("wb"), s.optJSONObject("battle"));
         applyNpc40(s.optJSONObject("npc40"), "npc40".equals(task));
         applyCombine(s.optJSONObject("combine"));

@@ -5,6 +5,7 @@ Java gọi các hàm cấp module, mọi giá trị trả về là chuỗi JSON 
     login(tab, user, pw, server)      -> {"ok": true}  (chạy nền; xem status)
     run(tab, features_json, opts_json)-> {"ok": true}  features: ["world_boss","npc40","nhi_kieu",...]
     run_party(leader_tab, member_tabs_json, features_json, opts_json) -> 40 NPC / Nhị Kiều theo party
+    form_party(leader_tab, member_tabs_json) -> chỉ lập đội (mời các tab cùng map), chạy nền
     party_status()                    -> {"ok": true, "tabs": [{tab, user, char, map, busy, leader, members}]}
     stop(tab) / logout(tab)
     status(tab)                       -> {"state": ..., "char": ..., "map": ..., "task": ...}
@@ -100,6 +101,7 @@ class Session:
         self.view = None
         self.wb_settings = {}
         self.combine_info = None
+        self.note = ""              # dòng nhật ký quan trọng gần nhất, hiện trên app
 
     def owns(self, msg, tname):
         """Dòng log thuộc phiên này: thread của phiên, hoặc có ``[user]`` / ``[tên nhân vật]``."""
@@ -112,10 +114,15 @@ class Session:
         d = os.path.join(_SETTINGS.get("runtime_dir") or "runtime", "logs")
         return os.path.join(d, "tab_%s.log" % self.tab)
 
+    NOTE_KEYS = ("40 NPC", "Nhị Kiều", "Party", "party", "Xếp võ tướng", "▶", "■", "Boss TG", "Lỗi", "lỗi",
+                 "Xong lượt chạy", "Đã bấm dừng")
+
     def add_line(self, line):
         with self._llock:
             self.lines.append(line)
             self.total += 1
+            if any(k in line for k in self.NOTE_KEYS):
+                self.note = line
             # Nhật ký đầy đủ chỉ ghi ra file (nút "Xuất nhật ký"), không hiện trên màn hình nữa.
             try:
                 path = self.log_path()
@@ -294,8 +301,14 @@ class Session:
         if c is not None and not c.running and self.state in ("online", "running"):
             self.state = "offline"
             self.error = "mất kết nối"
-        out = {"state": self.state, "error": self.error, "task": self.task, "user": self.label}
+        out = {"state": self.state, "error": self.error, "task": self.task, "user": self.label,
+               "note": self.note}
         if c is not None:
+            try:
+                from . import party
+                out["party"] = party.summary(c)
+            except Exception:
+                pass
             out.update(char=getattr(c, "char_name", None), map=getattr(c, "current_map", None),
                        boss=[getattr(c, "world_boss_count", None), getattr(c, "world_boss_max", None)])
             out["wb"] = self._wb_summary(c)
@@ -396,6 +409,14 @@ PARTY_FEATURES = ("npc40", "nhi_kieu")
 
 
 def run_party(leader_tab, member_tabs_json, features_json, opts_json="{}"):
+    out = _run_party(leader_tab, member_tabs_json, features_json, opts_json)
+    r = json.loads(out)
+    if not r.get("ok"):
+        _session(leader_tab).say("Party: không chạy được — %s" % r.get("error"))
+    return out
+
+
+def _run_party(leader_tab, member_tabs_json, features_json, opts_json="{}"):
     """Chạy 40 NPC / Nhị Kiều theo party: tab ``leader_tab`` làm đội trưởng (mở trận), các tab trong
     ``member_tabs_json`` (JSON list) đi theo. Mọi tab phải đang đăng nhập và rảnh."""
     features = [f for f in json.loads(features_json or "[]") if f in PARTY_FEATURES]
@@ -403,6 +424,14 @@ def run_party(leader_tab, member_tabs_json, features_json, opts_json="{}"):
     per_tab = opts.pop("_tabs", None) or {}       # đội hình riêng của từng tab thành viên
     if not features:
         return _json({"ok": False, "error": "party chỉ chạy 40 NPC / Nhị Kiều"})
+    from .features import DEFAULT_WINDOWS, in_window
+    wins = dict(DEFAULT_WINDOWS, **(_SETTINGS.get("windows") or {}))
+    open_now = [f for f in features if in_window(wins.get(f))]
+    if not open_now:
+        return _json({"ok": False, "error": "Ngoài giờ: " + "; ".join(
+            "%s %s–%s %s" % ({"npc40": "40 NPC", "nhi_kieu": "Nhị Kiều"}[f], (wins.get(f) or {}).get("start"),
+                             (wins.get(f) or {}).get("end"), _days(wins.get(f))) for f in features)
+            + ". Bấm 'Chỉ lập party' để thử lập đội trước."})
     lead = _session(leader_tab)
     mems = [_session(t) for t in json.loads(member_tabs_json or "[]") if str(t) != str(leader_tab)]
     for s in [lead] + mems:
@@ -426,6 +455,38 @@ def run_party(leader_tab, member_tabs_json, features_json, opts_json="{}"):
     else:
         lead.say("Party: đội trưởng, %d thành viên (%s)" % (len(mems), ", ".join(s.label for s in mems)))
     return _json(r)
+
+
+_DAY = ("T2", "T3", "T4", "T5", "T6", "T7", "CN")
+
+
+def _days(win):
+    d = (win or {}).get("days")
+    return "(" + "/".join(_DAY[i] for i in d) + ")" if d else "(hằng ngày)"
+
+
+def form_party(leader_tab, member_tabs_json):
+    """Chỉ lập đội (không chạy hoạt động): đội trưởng mời các tab đang đứng cùng map. Chạy nền."""
+    lead = _session(leader_tab)
+    mems = [_session(t) for t in json.loads(member_tabs_json or "[]") if str(t) != str(leader_tab)]
+    for s in [lead] + mems:
+        if s.client is None or not s.client.running:
+            return _json({"ok": False, "error": "tab %s chưa đăng nhập" % s.tab})
+    if not mems:
+        return _json({"ok": False, "error": "chưa chọn thành viên"})
+
+    def work():
+        from . import party
+        try:
+            joined, left = party.form(lead.client, [s.client for s in mems], say=lead.say)
+            lead.say("Party: %d/%d người trong đội%s" % (len(joined) + 1, len(mems) + 1,
+                                                       (" — chưa vào: %s (phải đứng cùng map với đội trưởng)"
+                                                        % ", ".join(left)) if left else ""))
+        except Exception as exc:
+            lead.say("Party lỗi: %s" % exc)
+
+    threading.Thread(target=work, daemon=True, name=lead.thread_prefix + "-party").start()
+    return _json({"ok": True})
 
 
 def party_status():

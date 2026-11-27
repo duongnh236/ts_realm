@@ -126,3 +126,17 @@ def _label_entity(c, entity):
     except Exception:
         pass
     return entity.hex()[:8]
+
+
+def summary(c):
+    """Đội hiện tại của client theo danh sách server gửi (S:013-005/006): None nếu không ở đội."""
+    members = [bytes(e) for e in (getattr(c, "party_members", None) or [])]
+    lead = getattr(c, "party_leader", None)
+    if not members and not lead:
+        return None
+    if lead and bytes(lead) not in members:
+        members.insert(0, bytes(lead))
+    me = bytes(getattr(c, "self_entity", b"") or b"")
+    return {"size": len(members), "leader": _label_entity(c, lead),
+            "is_leader": bool(lead) and bytes(lead) == me,
+            "names": [_label_entity(c, e) for e in members]}

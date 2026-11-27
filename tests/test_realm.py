@@ -1357,6 +1357,12 @@ class AndroidApiTest(unittest.TestCase):
             api.login(t, "acc" + t, "pw", "trieu_van")
             self.wait(t, ("online",))
         self.assertFalse(j.loads(api.run_party("1", '["2"]', '["world_boss"]'))["ok"])   # chỉ 40 NPC / Nhị Kiều
+        api._SETTINGS["windows"] = {"npc40": {"days": [], "start": "00:00", "end": "00:01"}}
+        r = j.loads(api.run_party("1", '["2"]', '["npc40"]'))
+        self.assertFalse(r["ok"])
+        self.assertIn("Ngoài giờ", r["error"])
+        self.assertIn("Ngoài giờ", j.loads(api.status("1"))["note"])           # hiện trên app
+        api._SETTINGS["windows"] = {"npc40": None}
         self.assertTrue(j.loads(api.party_status())["tabs"][0]["char"].startswith("NV_"))
         opts = {"max_losses": {"npc40": 3}, "_tabs": {"2": {"max_losses": {"npc40": 7}}}}
         r = j.loads(api.run_party("1", '["2"]', '["npc40","world_boss"]', j.dumps(opts)))
@@ -1365,6 +1371,7 @@ class AndroidApiTest(unittest.TestCase):
         self.wait("1", ("online",))
         time.sleep(0.05)
         self.assertEqual(sorted(self.parties), [("NV_acc1", "npc40", "leader", 3), ("NV_acc2", "npc40", "member", 7)])
+        api._SETTINGS.pop("windows", None)
 
     def test_cancel_login(self):
         api, j = self.api, self.json
@@ -2141,6 +2148,14 @@ class PartyTest(unittest.TestCase):
         self.assertEqual(lead.invites, ["B"])              # khác map: không mời
         self.assertEqual(self.cfg.PARTY_LEADERS_BY_IDX[self.party.PIDX], ["A"])
         self.assertTrue(b.party_invite_ready and b.party_idx == self.party.PIDX)
+
+    def test_summary(self):
+        a = self._client("A", b"A" * 8)
+        a.party_peers = lambda: []
+        self.assertIsNone(self.party.summary(a))
+        a.party_leader, a.party_members = b"A" * 8, [b"A" * 8, b"B" * 8]
+        sm = self.party.summary(a)
+        self.assertEqual((sm["size"], sm["is_leader"], sm["names"][0]), (2, True, "A"))
 
     def test_member_follow_until_leader_done(self):
         from realm import features
