@@ -72,6 +72,7 @@ def install(client_module) -> None:
         patch_turn_order(cls)
         patch_world_boss_totals(cls)
         patch_pet_list(cls)
+        patch_notices(cls)
     patch_potion_data(client_module)
     try:
         import importlib
@@ -533,3 +534,76 @@ def patch_pet_list(cls) -> None:
 
     cls._dispatch = _dispatch
     cls._realm_petlist_patched = True
+
+
+NOTICE_KEEP = 60          # giữ bao nhiêu dòng thông báo gần nhất
+NOTICE_CHUNK = 250        # server cắt thông báo dài thành nhiều gói, mỗi gói tối đa 250 byte chữ
+
+
+def parse_notice(pkt: bytes):
+    """S:002 thông báo hệ thống dạng chữ -> (kênh, chữ, số byte chữ), không phải thì None.
+
+    ``0a 00 | kênh u8 | 00 | n u8 | n byte UTF-8 (kết thúc 00)``. Kênh 1/2/3 (khung chat / giữa màn
+    hình / hệ thống). Byte thứ 4 = 01 là dạng có cấu trúc (nhận đồ...) -> bỏ qua. Capture 27/11:
+    "Hợp thành hàng loạt 20/20 lần: ... - phí 1780 Đồng - hoàn nguyên liệu 1 lần",
+    "Không hợp thành được lần này. Chưa mất gì."."""
+    if len(pkt) < 13 or pkt[6] != 0x02 or pkt[7:9] != b"\x0a\x00" or pkt[10] != 0:
+        return None
+    n = pkt[11]
+    raw = pkt[12:12 + n]
+    text = raw.split(b"\x00", 1)[0].decode("utf-8", "replace")
+    return pkt[9], text, n
+
+
+def patch_notices(cls) -> None:
+    """Ghi thông báo hệ thống của server vào ``realm_notices`` = [(seq, giờ, chữ)] để tính năng
+    (hợp vật phẩm...) đọc được server nói gì; ghép lại các mẩu bị cắt 250 byte.
+    Cũng ghi ô túi lớn nhất từng thấy (``realm_bag_max_slot``) và Đồng đã tiêu từ S:026 id=2."""
+    if getattr(cls, "_realm_notices_patched", False):
+        return
+    orig = cls._dispatch
+
+    def _dispatch(self, opcode, pkt):
+        orig(self, opcode, pkt)
+        try:
+            if opcode == 0x02:
+                got = parse_notice(pkt)
+                if got is not None:
+                    _add_notice(self, *got)
+            elif opcode == 0x1a and len(pkt) >= 13:
+                sid = int.from_bytes(pkt[7:9], "little")
+                val = int.from_bytes(pkt[9:13], "little")
+                if sid == 4:                         # số Đồng hiện có -> đếm lại từ đầu
+                    self.realm_money_spent = 0
+                elif sid == 2:                       # Đồng vừa bị trừ (phí hợp 1780 = đúng S:026)
+                    self.realm_money_spent = int(getattr(self, "realm_money_spent", 0) or 0) + val
+            elif opcode == 0x17:
+                slots = getattr(self, "bag_slots", None) or {}
+                if slots:
+                    top = max(int(k) for k in slots)
+                    if top > int(getattr(self, "realm_bag_max_slot", 0) or 0):
+                        self.realm_bag_max_slot = top
+        except Exception:
+            pass
+
+    cls._dispatch = _dispatch
+    cls._realm_notices_patched = True
+
+
+def _add_notice(client, channel, text, nbytes, now=None):
+    import time as _t
+    now = _t.time() if now is None else now
+    lst = getattr(client, "realm_notices", None)
+    if lst is None:
+        lst = client.realm_notices = []
+    last = getattr(client, "_realm_notice_open", None)
+    if last is not None and last[0] == channel and now - last[1] < 1.5 and lst and lst[-1][0] == last[2]:
+        seq, t0, old = lst[-1]
+        lst[-1] = (seq, t0, old + text)              # mẩu nối tiếp của thông báo bị cắt
+        seq_now = seq
+    else:
+        seq_now = int(getattr(client, "realm_notice_seq", 0) or 0) + 1
+        client.realm_notice_seq = seq_now
+        lst.append((seq_now, now, text))
+        del lst[:-NOTICE_KEEP]
+    client._realm_notice_open = (channel, now, seq_now) if nbytes >= NOTICE_CHUNK else None

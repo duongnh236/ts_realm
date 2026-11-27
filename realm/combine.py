@@ -17,6 +17,7 @@ MỚI xuất hiện sau lần hợp (đồ vừa hợp ra, có ``fc`` > 0 = phâ
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 log = logging.getLogger("bot")
@@ -25,6 +26,8 @@ MAX_SLOTS = 3
 RESTRICT_NOT_COMBINE_MATERIAL = 4      # bit "không dùng làm nguyên liệu hợp" trong items_gamedata
 WAIT_RESULT = 6.0                      # chờ server trừ nguyên liệu sau mỗi lần hợp
 GAP = 1.2                              # nghỉ giữa hai lần hợp
+MAX_REFUSED = 3                        # server từ chối ("Không hợp thành được lần này") bao nhiêu lần liền thì dừng
+RETRY_WAIT = 3.0                       # nghỉ trước khi thử lại sau một lần bị từ chối
 DECOMPOSE_BATCH = 8                    # client gốc phân giải tối đa 8 ô một lượt
 SETTLE = 0.8                           # chờ server bỏ hết đồ hợp ra vào túi
 
@@ -165,10 +168,90 @@ def check(client, tid, qty, n_slots):
     return None
 
 
+def bag_capacity(client) -> int:
+    """Sức chứa túi. TS Realm không gửi con số này (công thức ts_bot 50 + 5×mở rộng ra sai), nên lấy
+    ô lớn nhất từng thấy có đồ — túi đánh số 1..sức chứa và hay đầy tới ô cuối (log 27/11: ô 210,
+    lúc đầy đúng 210/210). Ghi đè được bằng ``client.realm_bag_cap``."""
+    fixed = int(getattr(client, "realm_bag_cap", 0) or 0)
+    if fixed > 0:
+        return fixed
+    slots = getattr(client, "bag_slots", None) or {}
+    top = max([int(k) for k in slots] or [0])
+    return max(top, int(getattr(client, "realm_bag_max_slot", 0) or 0))
+
+
+def bag_used(client) -> int:
+    return sum(1 for v in list((getattr(client, "bag_slots", None) or {}).values()) if int(v[1]) > 0)
+
+
+def bag_free(client) -> int:
+    return max(0, bag_capacity(client) - bag_used(client))
+
+
+def money_left(client):
+    """Đồng ước tính còn lại: số Đồng lúc đăng nhập trừ các khoản S:026 id=2 đã trừ sau đó."""
+    m = getattr(client, "money", None)
+    if m is None:
+        return None
+    return int(m) - int(getattr(client, "realm_money_spent", 0) or 0)
+
+
+def notices_since(client, seq):
+    return [t for s, _, t in list(getattr(client, "realm_notices", None) or []) if s > seq]
+
+
+def notice_seq(client) -> int:
+    return int(getattr(client, "realm_notice_seq", 0) or 0)
+
+
+_BATCH = re.compile(r"Hợp thành hàng loạt\s+(\d+)\s*/\s*(\d+)")
+_FEE = re.compile(r"phí\s+([\d.,]+)\s*Đồng")
+_REFUND = re.compile(r"hoàn nguyên liệu\s+(\d+)\s*lần")
+_FAILS = re.compile(r"thất bại\s+(\d+)\s*lần")
+
+
+def classify(texts):
+    """Đọc thông báo server sau một lần hợp -> (loại, chi tiết).
+
+    loại: "batch" (hợp xong, chi tiết = dict x/y/phí/hoàn), "refused" ("Không hợp thành được lần
+    này. Chưa mất gì." — server không làm gì, không mất gì), "money" (thiếu Đồng), "full" (server
+    nói túi đầy), None = chưa thấy gì liên quan."""
+    for t in texts:
+        low = t.lower()
+        if "không đủ" in low and ("đồng" in low or "tiền" in low or "bạc" in low):
+            return "money", t
+        if ("túi" in low or "hành trang" in low) and ("đầy" in low or "không đủ chỗ" in low or "hết chỗ" in low):
+            return "full", t
+    for t in texts:
+        m = _BATCH.search(t)
+        if m:
+            info = {"done": int(m.group(1)), "of": int(m.group(2)), "fee": 0, "refund": 0, "fail": 0}
+            f = _FEE.search(t)
+            if f:
+                info["fee"] = int(re.sub(r"[.,]", "", f.group(1)) or 0)
+            r = _REFUND.search(t)
+            if r:
+                info["refund"] = int(r.group(1))
+            r = _FAILS.search(t)
+            if r:
+                info["fail"] = int(r.group(1))
+            return "batch", info
+    for t in texts:
+        if "không hợp thành được" in t.lower():
+            return "refused", t
+    return None, None
+
+
 def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
         sleep_fn=time.sleep, now=time.time, wait=WAIT_RESULT, gap=GAP, auto_decompose=True,
-        settle=SETTLE, keep_bonus=27, keep_level=0):
-    """Hợp tới khi đủ ``rounds`` lần (0 = tới khi hết nguyên liệu), bấm dừng, hoặc server không trừ đồ."""
+        settle=SETTLE, keep_bonus=27, keep_level=0, retry_wait=RETRY_WAIT):
+    """Hợp tới khi đủ ``rounds`` lần (0 = tới khi hết nguyên liệu), bấm dừng, túi đầy, thiếu Đồng,
+    hoặc server từ chối ``MAX_REFUSED`` lần liền.
+
+    Thành công = server báo "Hợp thành hàng loạt x/y" hoặc trừ nguyên liệu. Thất bại trong lô thì
+    server hoàn nguyên liệu nên số trừ ít hơn, vẫn tính là xong. "Không hợp thành được lần này. Chưa
+    mất gì." (log 27/11, túi còn 11–16 ô trống) là server bỏ qua cả lô -> chờ rồi thử lại; chỉ coi
+    là túi đầy khi đếm ô thật sự hết chỗ."""
     lbl = getattr(client, "_label", "?")
     tid, qty, rounds, n_slots = int(tid), int(qty), int(rounds), int(n_slots)
     name = (_items().get(tid) or {}).get("name") or ("mã %d" % tid)
@@ -178,6 +261,7 @@ def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
         return {"done": 0, "used": 0, "why": err}
     start = total(client, tid)
     done, why, broken, kept_n = 0, "xong", 0, 0
+    refused, last_fee, fee_total = 0, 0, 0
     items = _items()
     log.info("[%s] Hợp vật phẩm: %s, %d ô × %d cái, %s (đang có %d)", lbl, name, n_slots, qty,
              "%d lần" % rounds if rounds > 0 else "tới khi hết", start)
@@ -197,16 +281,56 @@ def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
             break
         before = total(client, tid)
         snap = {k: list(v) for k, v in list((getattr(client, "bag_slots", None) or {}).items())}
+        seq0 = notice_seq(client)
         client.send(0x17, payload(entries))
         deadline = now() + wait
-        while total(client, tid) >= before and now() < deadline and not stop_event.is_set():
+        kind, info = None, None
+        while now() < deadline and not stop_event.is_set():
+            kind, info = classify(notices_since(client, seq0))
+            if kind is not None:
+                break
+            if total(client, tid) < before:
+                sleep_fn(0.3)                   # đã trừ đồ, chờ thêm một nhịp cho thông báo tới
+                kind, info = classify(notices_since(client, seq0))
+                break
             sleep_fn(0.2)
         after = total(client, tid)
-        if after >= before:
-            why = "server không trừ nguyên liệu (túi đầy hoặc bị từ chối)"
-            break
+        if kind is None and after < before:
+            kind = "batch"                      # server có trừ đồ nhưng thông báo không tới
+        if kind != "batch":
+            used_n, cap = bag_used(client), bag_capacity(client)
+            free = max(0, cap - used_n)
+            money = money_left(client)
+            if kind == "money":
+                why = "không đủ Đồng (server: %s)" % info
+                break
+            if kind == "full" or free <= 0:
+                why = "túi đầy (%d/%d ô)" % (used_n, cap) + (" — server: %s" % info if kind == "full" else "")
+                break
+            if money is not None and last_fee and money < last_fee:
+                why = "có thể hết Đồng (còn ~%d, mỗi lần ~%d)" % (money, last_fee)
+                break
+            refused += 1
+            said = info if kind == "refused" else "không phản hồi"
+            if refused >= MAX_REFUSED:
+                why = "server từ chối %d lần liền (%s) — túi còn %d/%d ô trống" % (refused, said, free, cap)
+                break
+            log.info("[%s] Server chưa hợp (%s), túi còn %d/%d ô trống -> thử lại (%d/%d)", lbl, said,
+                     free, cap, refused, MAX_REFUSED)
+            sleep_fn(retry_wait)
+            continue
+        refused = 0
+        if info and info.get("fee"):
+            last_fee = info["fee"]
+            fee_total += info["fee"]
         done += 1
-        log.info("[%s] Hợp lần %d: dùng %d %s, còn %d", lbl, done, before - after, name, after)
+        extra = ""
+        if info:
+            extra = " (%d/%d lần%s%s)" % (info["done"], info["of"],
+                                          ", hoàn nguyên liệu %d" % info["refund"] if info["refund"] else "",
+                                          ", phí %d Đồng" % info["fee"] if info["fee"] else "")
+        log.info("[%s] Hợp lần %d%s: dùng %d %s, còn %d — túi %d/%d", lbl, done, extra, before - after, name,
+                 after, bag_used(client), bag_capacity(client))
         if auto_decompose:
             sleep_fn(settle)
             kept = []
@@ -226,10 +350,12 @@ def run(client, tid, qty, rounds, stop_event, n_slots=MAX_SLOTS, progress=None,
         if progress is not None:
             try:
                 progress({"tid": tid, "name": name, "done": done, "rounds": rounds, "left": after,
-                          "used": start - after, "broken": broken, "kept": kept_n})
+                          "used": start - after, "broken": broken, "kept": kept_n,
+                          "fee": fee_total, "bag": "%d/%d" % (bag_used(client), bag_capacity(client))})
             except Exception:
                 pass
         sleep_fn(gap)
     used = start - total(client, tid)
     log.info("[%s] Hợp vật phẩm dừng: %s — hợp %d lần, dùng %d %s", lbl, why, done, used, name)
-    return {"done": done, "used": used, "why": why, "name": name, "broken": broken, "kept": kept_n}
+    return {"done": done, "used": used, "why": why, "name": name, "broken": broken, "kept": kept_n,
+            "fee": fee_total}

@@ -737,7 +737,115 @@ class CombineTest(unittest.TestCase):
         c = FakeBagClient({66: [40045, 9108]}, refuse_after=1)
         r = self.run_it(c)
         self.assertEqual(r["done"], 1)
-        self.assertIn("không trừ", r["why"])
+        self.assertEqual(len(c.sent), 1 + self.cb.MAX_REFUSED)       # thử lại rồi mới dừng
+        self.assertIn("từ chối", r["why"])
+        self.assertIn("ô trống", r["why"])
+
+    def _notify(self, c, script):
+        """Mỗi lần gửi gói hợp, server 'nói' câu tiếp theo trong ``script`` (None = im)."""
+        orig = c.send
+        msgs = list(script)
+
+        def send(op, body):
+            text = msgs.pop(0) if msgs else None
+            if text and "Không hợp" in text:
+                c.sent.append((op, body))                       # server bỏ qua cả lô, không trừ
+            else:
+                orig(op, body)
+            if text:
+                c.realm_notice_seq = getattr(c, "realm_notice_seq", 0) + 1
+                c.realm_notices = getattr(c, "realm_notices", []) + [(c.realm_notice_seq, 0, text)]
+        c.send = send
+
+    def test_refused_once_then_retries(self):
+        c = FakeBagClient({66: [40045, 9108]})
+        self._notify(c, ["Hợp thành hàng loạt 20/20 lần: Tơ Lụa Tứ Xuyên x9 - phí 1780 Đồng",
+                         "Không hợp thành được lần này. Chưa mất gì.",
+                         "Hợp thành hàng loạt 19/20 lần: Tơ Lụa Tứ Xuyên x9 - phí 1691 Đồng - hoàn nguyên liệu 1 lần"])
+        r = self.run_it(c, rounds=2)
+        self.assertEqual(r["done"], 2)
+        self.assertEqual(len(c.sent), 3)
+        self.assertEqual(r["fee"], 1780 + 1691)
+
+    def test_refused_with_free_slots_is_not_bag_full(self):
+        c = FakeBagClient({66: [40045, 9108], 1: [1, 1]})
+        c.realm_bag_cap = 210
+        self._notify(c, ["Không hợp thành được lần này. Chưa mất gì."] * 5)
+        r = self.run_it(c)
+        self.assertEqual(r["done"], 0)
+        self.assertNotIn("đầy", r["why"])
+        self.assertIn("208/210", r["why"])
+
+    def test_real_bag_full(self):
+        c = FakeBagClient({k: [1, 1] for k in range(1, 210)})
+        c.bag_slots[210] = [40045, 9108]
+        self._notify(c, ["Không hợp thành được lần này. Chưa mất gì."])
+        r = self.run_it(c)
+        self.assertEqual(len(c.sent), 1)
+        self.assertIn("túi đầy (210/210", r["why"])
+
+    def test_not_enough_money(self):
+        c = FakeBagClient({66: [40045, 9108]})
+        self._notify(c, ["Không đủ Đồng để hợp thành (cần 1780)."])
+        r = self.run_it(c)
+        self.assertEqual(len(c.sent), 1)
+        self.assertIn("không đủ Đồng", r["why"])
+
+    def test_money_estimate_explains_refusal(self):
+        c = FakeBagClient({66: [40045, 9108]})
+        c.money, c.realm_money_spent = 2000, 0
+        orig = c.send
+
+        def send(op, body):
+            c.realm_money_spent += 1780
+            orig(op, body)
+        c.send = send
+        self._notify(c, ["Hợp thành hàng loạt 20/20 lần: x - phí 1780 Đồng",
+                         "Không hợp thành được lần này. Chưa mất gì."])
+        r = self.run_it(c)
+        self.assertEqual(r["done"], 1)
+        self.assertIn("hết Đồng", r["why"])
+
+    def test_full_refund_batch_counts_as_done(self):
+        c = FakeBagClient({66: [40045, 9108]}, refuse_after=0)          # không trừ gì (hoàn hết)
+        self._notify(c, ["Hợp thành hàng loạt 3/3 lần: thất bại 3 lần - phí 267 Đồng - hoàn nguyên liệu 3 lần"])
+        r = self.run_it(c, rounds=1)
+        self.assertEqual(r["done"], 1)
+
+    def test_notice_patch_joins_chunks(self):
+        from realm import realm_login as rl
+
+        def frame(ch, text):
+            raw = text.encode()
+            body = b"\x0a\x00" + bytes([ch, 0, len(raw)]) + raw
+            return b"\xc0\x91" + (len(body) + 7).to_bytes(2, "little") + b"\x00\x00\x02" + body
+
+        class Base:
+            bag_slots = {}
+
+            def _dispatch(self, opcode, pkt):
+                pass
+        rl.patch_notices(Base)
+        b = Base()
+        first = "Hợp thành hàng loạt 20/20 lần: " + "a" * 400
+        first = first.encode()[:250].decode("utf-8", "ignore")
+        first = first + "b" * (250 - len(first.encode()))
+        b._dispatch(0x02, frame(3, first))
+        b._dispatch(0x02, frame(3, " - phí 1780 Đồng\x00"))
+        b._dispatch(0x02, frame(2, "Không hợp thành được lần này. Chưa mất gì.\x00"))
+        self.assertEqual(len(b.realm_notices), 2)
+        self.assertTrue(b.realm_notices[0][2].endswith("phí 1780 Đồng"))
+        kind, info = self.cb.classify([b.realm_notices[0][2]])
+        self.assertEqual((kind, info["fee"]), ("batch", 1780))
+        self.assertEqual(self.cb.classify([b.realm_notices[1][2]])[0], "refused")
+        b._dispatch(0x1a, b"\xc0\x91\x0d\x00\x00\x00\x1a" + b"\x02\x00" + (1780).to_bytes(4, "little"))
+        self.assertEqual(b.realm_money_spent, 1780)
+
+    def test_bag_capacity_from_highest_slot(self):
+        c = FakeBagClient({5: [1, 1], 210: [2, 1]})
+        self.assertEqual((self.cb.bag_capacity(c), self.cb.bag_free(c)), (210, 208))
+        c.realm_bag_max_slot = 215
+        self.assertEqual(self.cb.bag_capacity(c), 215)
 
     def test_decompose_body_matches_capture(self):
         b = self.cb.decompose_body(3, [(0x39, 1), (0x4e, 1)])
