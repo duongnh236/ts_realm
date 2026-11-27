@@ -53,7 +53,9 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          "danger_first": True, "danger_min_tier": 1,
          # Chế độ (ngoài boss) mà bước đánh tự động chọn skill theo dame wiki (auto_attack) thay cho ts_bot.
          # Skill đánh chọn trong app vẫn được ưu tiên. Thêm chế độ phó bản tuần vào đây khi có.
-         "damage_modes": ["npc40", "nhi_kieu"]}
+         "damage_modes": ["npc40", "nhi_kieu"],
+         # 40 NPC / Nhị Kiều: nhân vật đánh dame trước (còn skill dame đủ SP), hết mới hỗ trợ.
+         "char_damage_first": True}
 
 _realm_rules = threading.local()   # .only = True: chỉ đọc luật skill do app chọn
 
@@ -342,11 +344,24 @@ def tsm_decide(combat, state, unit, skills, stat, options, tag, spam, fire_min, 
         sp_restore = (lambda: boss_sp_restore(combat, state, unit, skills, stat))
     else:
         sp_restore = (lambda: combat._try_sp_restore(state, unit, skills, stat))
+    def damage_first():
+        # 40 NPC / Nhị Kiều: nhân vật còn skill dame đủ SP thì đánh trước, hết mới đi hỗ trợ
+        # (khống chế, giải buff địch, buff, hồi SP) - yêu cầu user 27/11. Giải Đẩu Chuyển, hồi sinh,
+        # hồi máu khi nguy, giải khống chế đồng đội vẫn đứng trước.
+        if (unit != combat.config.UNIT_CHAR or not RULES.get("char_damage_first", True)
+                or getattr(state, "realm_mode", None) not in tuple(RULES.get("damage_modes") or ())):
+            return None
+        normal = getattr(combat.config, "SKILL_NORMAL", 10000)
+        if best_attack_skill(combat, skills, getattr(stat, "sp", 0)) == normal:
+            return None
+        return attack()
+
     steps = (
         lambda: try_top_dispel(combat, state, unit, skills, stat, options),
         lambda: combat._try_revive(state, unit, skills, stat, options),
         heal,
         lambda: try_cleanse(combat, state, unit, skills, stat, options),
+        damage_first,
         lambda: combat._try_protect(state, unit, skills, stat) if _guard_first(state, stat) else None,
         lambda: combat._try_cc(state, unit, skills, stat, options, "high"),
         lambda: combat._try_cc(state, unit, skills, stat, options, "low"),

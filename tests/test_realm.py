@@ -580,6 +580,8 @@ class TsmDecideTest(unittest.TestCase):
         cb._try_break_enemy_protect = lambda *a: None
         cb._try_sp_restore = lambda *a: None
         cb._combat_attack = lambda *a: "ATTACK"
+        cb._is_attack = lambda s: s in (13010, 13013)
+        cb.config.SKILL_NORMAL = 10000
         cr.install(cb)
 
     def st(self, **kw):
@@ -633,6 +635,14 @@ class TsmDecideTest(unittest.TestCase):
     def test_other_modes_untouched(self):
         st = self.st(realm_mode=None, skills_char=[], allies={(3, 2): NS(hp=900, hp_max=1000)})
         self.assertEqual(self.cb.decide_char(st, []), "ORIG_CHAR")
+
+    def test_char_damage_first(self):
+        """40 NPC: nhân vật còn skill dame đủ SP thì đánh trước khống chế; hết SP thì khống chế."""
+        ok = {(3, 2): NS(hp=900, hp_max=1000)}
+        st = self.st(skills_char=["cc", 13010], allies=ok, char=NS(sp=200, hp=900, hp_max=1000), enemy_hp={0: 10})
+        self.assertEqual(self.cb.decide_char(st, []), "ATTACK")
+        st.char = NS(sp=5, hp=900, hp_max=1000)                       # không đủ SP (giả lập 10 SP / skill)
+        self.assertEqual(self.cb.decide_char(st, []), ("CC", "high"))
 
     def test_nhi_kieu_uses_tsm_ai(self):
         st = self.st(realm_mode="nhi_kieu", skills_char=["cc"], allies={(3, 2): NS(hp=900, hp_max=1000)},
