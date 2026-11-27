@@ -148,6 +148,56 @@ class TsManagerRulesTest(unittest.TestCase):
         self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 1)   # farm thường: như ts_bot
 
 
+class NpcDangerTest(unittest.TestCase):
+    """NPC có skill nguy hiểm (realm/npc_danger.py) bị đánh trước trong 40 NPC / Nhị Kiều / Boss."""
+
+    def setUp(self):
+        fresh_rules()
+        cr.RULES.update({"danger_first": True, "danger_min_tier": 1, "npc40_ai": "ts_manager",
+                         "tsm_modes": ["npc40", "nhi_kieu", "boss"]})
+
+    def tearDown(self):
+        cr.RULES.update({"danger_first": True, "danger_min_tier": 1})
+
+    def _state(self, tids, hp, **kw):
+        units = {(p // 10, p % 10): NS(template_id=t) for p, t in tids.items()}
+        return fake_state(realm_mode="nhi_kieu", enemy_hp=hp, tracker=NS(units=units), **kw)
+
+    def test_table(self):
+        from realm import npc_danger as nd
+        self.assertGreater(len(nd.DANGER), 500)
+        self.assertEqual(nd.tier_of(45276), 3)   # Cuồng Đại Kiều: Đẩu Chuyển
+        self.assertEqual(nd.tier_of(45275), 3)   # Cuồng Tiểu Kiều: Linh Kính
+        self.assertEqual(nd.tier_of(10002), 0)   # Trương Bảo: skill thường
+        info = {20014: {"splash": 5, "cat": 15}, 10012: {"splash": 8, "cat": 2}, 14021: {"splash": 1}}
+        self.assertEqual(nd.classify([14021], info)[0], 0)          # Hỗn Loạn đơn: không tính
+        self.assertEqual(nd.classify([20014], info), (3, [20014]))  # Tứ Nhân Hỗn Loạn
+        self.assertEqual(nd.classify([10012], info), (1, [10012]))  # Long Trời Lỡ Đất
+
+    def test_dangerous_first_then_low_hp(self):
+        cb = fake_combat()
+        cr.install(cb)
+        st = self._state({0: 10002, 1: 10001, 2: 45276}, {0: 100, 1: 200, 2: 900})
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 2)    # Đẩu Chuyển (mức 3) trước
+        cr.RULES["danger_min_tier"] = 3
+        st = self._state({0: 10002, 1: 10001}, {0: 100, 1: 50})
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 1)    # không con mức 3: ít máu nhất
+
+    def test_skip_barrier_and_off_modes(self):
+        cb = fake_combat()
+        cr.install(cb)
+        st = self._state({0: 10002, 1: 45275, 2: 45276}, {0: 100, 1: 900, 2: 800},
+                         status_by_kind={(0, 2): {"b": 10010}})
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 1)    # con Kết Giới chờ giải
+        st = self._state({0: 10002, 2: 45276}, {0: 100, 2: 800})
+        st.realm_mode = None                                       # farm thường: như cũ
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 0)
+        st.realm_mode = "boss"
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 2)
+        cr.RULES["danger_first"] = False
+        self.assertEqual(cb._lowest_hp_enemy(st, [0, 1, 2]), 0)
+
+
 class CombatRulesTest(unittest.TestCase):
     def setUp(self):
         fresh_rules()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 
+from . import npc_danger
 from . import status_logic as sl
 
 log = logging.getLogger("bot")
@@ -44,7 +45,11 @@ RULES = {"cleanse": True, "dispel": True, "dispel_mode": "worthy", "avoid_barrie
          "reflect_policy": "hold",
          # Boss TG: bước bỏ qua trong trận ("heal" = skill hồi máu, "sp_restore" = skill hồi SP).
          # Hồi SP trong boss chỉ khi có người SP < boss_sp_below.
-         "boss_skip": ["heal"], "boss_sp_below": 0.3}
+         "boss_skip": ["heal"], "boss_sp_below": 0.3,
+         # 40 NPC / Nhị Kiều / Boss TG: con có skill nguy hiểm (realm/npc_danger.py) bị đánh trước,
+         # cùng mức thì con ít máu. danger_min_tier: 1 = cả skill đánh toàn phe, 2 = khống chế mềm /
+         # Kết Giới trở lên, 3 = chỉ phản dame + khống chế cứng diện rộng.
+         "danger_first": True, "danger_min_tier": 1}
 
 _realm_rules = threading.local()   # .only = True: chỉ đọc luật skill do app chọn
 
@@ -255,6 +260,28 @@ def avoid_barrier(combat, state, offered, pos):
     new = min(alt, key=lambda x: x[1])[0]
     log.info("[%s] ô %d có Kết Giới / phản dame -> đánh ô %d trước, chờ giải", state.label, pos, new)
     return new
+
+
+def danger_target(combat, state, offered, pos):
+    """Chế độ TSM: địch có skill nguy hiểm (phản dame, khống chế diện rộng...) -> đánh nó trước.
+    Bỏ qua con đang có Kết Giới / phản dame (chờ giải). Không có con nguy hiểm -> giữ ``pos``."""
+    if pos is None or not RULES.get("danger_first", True) or not _use_tsm(state):
+        return pos
+    avoid = sl.avoid_damage_targets(getattr(state, "status_by_kind", None) or {},
+                                    getattr(state, "enemy_rows", (0, 1)))
+    off = set(offered or ())
+    cand = [(p, hp) for p, hp in (getattr(state, "enemy_hp", None) or {}).items()
+            if hp > 0 and (combat._row(p), combat._col(p)) not in avoid
+            and combat._col_reachable(combat._col(p), off)]
+    new = npc_danger.pick(state, cand, int(RULES.get("danger_min_tier", 1)))
+    if new is None or new == pos:
+        return pos
+    blocked = (combat._row(pos), combat._col(pos)) in avoid
+    if blocked or npc_danger.danger_of(state, new) > npc_danger.danger_of(state, pos):
+        log.info("[%s] ô %d có skill nguy hiểm (mức %d, NPC %s) -> đánh trước ô %d", state.label, new,
+                 npc_danger.danger_of(state, new), sorted(npc_danger.enemy_tids(state, new)), pos)
+        return new
+    return pos
 
 
 def _party_hp_ratio(state):
@@ -546,10 +573,14 @@ def install(combat, rules: dict = None):
         return orig_protect(state, unit, skills, stat)
 
     def _lowest_hp_enemy(state, offered):
-        return avoid_barrier(combat, state, offered, orig_low(state, offered))
+        pos = danger_target(combat, state, offered, orig_low(state, offered))
+        return avoid_barrier(combat, state, offered, pos)
 
     def _enemy_target_pos(state, offered, target_key):
-        return avoid_barrier(combat, state, offered, orig_pos(state, offered, target_key))
+        pos = orig_pos(state, offered, target_key)
+        if (target_key or "auto") in ("enemy_low_hp", "dangerous_npc"):
+            pos = danger_target(combat, state, offered, pos)
+        return avoid_barrier(combat, state, offered, pos)
 
     combat.decide_char, combat.decide_pet, combat._try_protect = decide_char, decide_pet, _try_protect
     combat._lowest_hp_enemy, combat._enemy_target_pos = _lowest_hp_enemy, _enemy_target_pos
